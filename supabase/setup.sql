@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS clients (
   location_address TEXT,
   location_city TEXT NOT NULL,
   google_place_id TEXT NOT NULL,
+  custom_domain TEXT UNIQUE,
   logo_url TEXT,
   brand_color_primary TEXT DEFAULT '#c9a87c',
   brand_color_secondary TEXT DEFAULT '#a01b1b',
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS clients (
 ALTER TABLE clients
   ADD COLUMN IF NOT EXISTS daily_ai_limit INTEGER DEFAULT 50,
   ADD COLUMN IF NOT EXISTS logo_url TEXT,
+  ADD COLUMN IF NOT EXISTS custom_domain TEXT UNIQUE,
   ADD COLUMN IF NOT EXISTS brand_color_primary TEXT DEFAULT '#c9a87c',
   ADD COLUMN IF NOT EXISTS brand_color_secondary TEXT DEFAULT '#a01b1b';
 

@@ -100,6 +100,11 @@ export const createClientSchema = z.object({
     .optional()
     .default('#a01b1b'),
   logo_url: z.string().url().optional().or(z.literal('')),
+  custom_domain: z
+    .string()
+    .regex(/^[a-z0-9.-]+\.[a-z]{2,}$/, 'Must be a valid domain name (e.g. reviews.lovmedspa.com)')
+    .optional()
+    .or(z.literal('')),
   services: z
     .array(z.string().min(1).max(100))
     .min(1, 'At least one service required')

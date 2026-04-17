@@ -33,7 +33,7 @@ export async function POST(request: NextRequest) {
   // Fetch client
   const { data: client, error: clientError } = await supabaseServer
     .from('clients')
-    .select('id, slug')
+    .select('id, slug, custom_domain')
     .eq('id', client_id)
     .single()
 
@@ -44,7 +44,9 @@ export async function POST(request: NextRequest) {
   // Generate unique short code
   const slugPrefix = client.slug.replace('lovmedspa-', 'lms-').slice(0, 8)
   const shortCode = generateShortCode(slugPrefix)
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+  const appUrl = client.custom_domain
+    ? `https://${client.custom_domain}`
+    : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
   const qrUrl = `${appUrl}/q/${shortCode}`
 
   // Generate QR code as data URL (so the admin page can display + download)

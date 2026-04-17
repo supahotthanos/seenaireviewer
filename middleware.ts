@@ -13,7 +13,7 @@ function safeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
   // Gate /admin pages at the edge. API routes under /api/admin enforce their
@@ -44,6 +44,48 @@ export function middleware(request: NextRequest) {
         status: 403,
         headers: { 'Content-Type': 'application/json' },
       })
+    }
+  }
+
+  // Custom Domain Whitelabeling rewrite
+  const host = request.headers.get('host') || ''
+  const appHost = new URL(process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000').host
+
+  if (
+    host &&
+    host !== appHost &&
+    pathname === '/'
+  ) {
+    try {
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      
+      if (supabaseUrl && anonKey) {
+        const res = await fetch(
+          `${supabaseUrl}/rest/v1/clients?custom_domain=eq.${encodeURIComponent(host)}&select=slug&limit=1`,
+          {
+            headers: {
+              apikey: anonKey,
+              Authorization: `Bearer ${anonKey}`,
+            },
+            next: { revalidate: 60 } // cache the domain lookup for 60s
+          }
+        )
+        if (res.ok) {
+          const data = await res.json()
+          if (data && data.length > 0 && data[0].slug) {
+            const rewriteUrl = new URL(`/${data[0].slug}`, request.url)
+            rewriteUrl.search = request.nextUrl.search
+            
+            const rewriteResponse = NextResponse.rewrite(rewriteUrl)
+            rewriteResponse.headers.set('X-Frame-Options', 'DENY')
+            rewriteResponse.headers.set('X-Content-Type-Options', 'nosniff')
+            return rewriteResponse
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Middleware] Domain lookup failed', e)
     }
   }
 

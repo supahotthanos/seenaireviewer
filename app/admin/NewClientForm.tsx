@@ -20,6 +20,7 @@ export interface ClientSeed {
   brand_color_primary?: string
   brand_color_secondary?: string
   logo_url?: string | null
+  custom_domain?: string | null
   services?: string[]
   team_members?: string[]
   daily_ai_limit?: number
@@ -61,6 +62,7 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
     brand_color_primary: '#c9a87c',
     brand_color_secondary: '#a01b1b',
     logo_url: '',
+    custom_domain: '',
     services_text: '',
     team_text: '',
     daily_ai_limit: 50,
@@ -83,6 +85,7 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
   // the operator fills in the new location's unique info.
   if (mode === 'edit') {
     base.slug = seed.slug ?? ''
+    base.custom_domain = seed.custom_domain ?? ''
     base.location_address = seed.location_address ?? ''
     base.location_city = seed.location_city ?? ''
     base.google_place_id = seed.google_place_id ?? ''
@@ -172,6 +175,7 @@ export default function NewClientForm({
               brand_color_primary: form.brand_color_primary,
               brand_color_secondary: form.brand_color_secondary,
               logo_url: form.logo_url || null,
+              custom_domain: form.custom_domain || null,
               services,
               team_members,
               daily_ai_limit: form.daily_ai_limit,
@@ -193,6 +197,7 @@ export default function NewClientForm({
             brand_color_primary: form.brand_color_primary,
             brand_color_secondary: form.brand_color_secondary,
             logo_url: form.logo_url || undefined,
+            custom_domain: form.custom_domain || undefined,
             services,
             team_members,
             daily_ai_limit: form.daily_ai_limit,
@@ -355,6 +360,13 @@ export default function NewClientForm({
                   </p>
                 </>
               )}
+
+              <GlassInput
+                label="Custom Domain (optional whitelabeling)"
+                placeholder="reviews.lovmedspa.com"
+                value={form.custom_domain}
+                onChange={(e) => setForm((f) => ({ ...f, custom_domain: e.target.value.toLowerCase().trim() }))}
+              />
 
               <GlassInput
                 label="Full Address (optional)"

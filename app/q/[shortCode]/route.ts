@@ -15,7 +15,7 @@ export async function GET(
     // 1. Look up QR code + its client
     const { data: qrCode, error } = await supabaseServer
       .from('qr_codes')
-      .select('id, client_id, is_active, clients(slug)')
+      .select('id, client_id, is_active, clients(slug, custom_domain)')
       .eq('short_code', shortCode)
       .single()
 
@@ -30,8 +30,9 @@ export async function GET(
     void supabaseServer.rpc('increment_qr_scan', { qr_id: qrCode.id })
 
     // 3. Build redirect URL
-    const clientData = qrCode.clients as unknown as { slug: string } | { slug: string }[] | null
+    const clientData = qrCode.clients as unknown as { slug: string; custom_domain: string | null } | { slug: string; custom_domain: string | null }[] | null
     const slug = Array.isArray(clientData) ? clientData[0]?.slug : clientData?.slug
+    const customDomain = Array.isArray(clientData) ? clientData[0]?.custom_domain : clientData?.custom_domain
 
     if (!slug) {
       return NextResponse.redirect(
@@ -39,8 +40,15 @@ export async function GET(
       )
     }
 
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-    const redirectUrl = new URL(`/${slug}`, appUrl)
+    let baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+    let targetPath = `/${slug}`
+    
+    if (customDomain) {
+      baseUrl = `https://${customDomain}`
+      targetPath = `/`
+    }
+
+    const redirectUrl = new URL(targetPath, baseUrl)
     redirectUrl.searchParams.set('src', 'qr')
     redirectUrl.searchParams.set('qr', shortCode)
 

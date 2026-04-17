@@ -7,6 +7,7 @@ export interface Client {
   location_address: string | null
   location_city: string
   google_place_id: string
+  custom_domain: string | null
   logo_url: string | null
   brand_color_primary: string
   brand_color_secondary: string
