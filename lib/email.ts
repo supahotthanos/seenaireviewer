@@ -63,10 +63,21 @@ export async function sendNegativeFeedbackAlert(
 </html>
 `
 
+  // Support multiple recipients — comma-separated in notification_email
+  const recipients = client.notification_email
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0 && e.includes('@'))
+
+  if (recipients.length === 0) {
+    console.error('[email] No valid recipients for client', client.slug)
+    return
+  }
+
   await resend.emails.send({
-    from: 'Reviews <noreply@reviews.seenai.com>',
-    to: [client.notification_email],
-    subject: `${stars} Private Feedback from ${review.customer_name} — ${client.business_name}`,
+    from: process.env.RESEND_FROM_EMAIL || 'Reviews <onboarding@resend.dev>',
+    to: recipients,
+    subject: `${stars} Private Feedback from ${review.customer_name} — ${client.business_name} (${client.location_city})`,
     html,
   })
 }

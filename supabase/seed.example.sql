@@ -1,6 +1,13 @@
--- LovMedSpa Review Funnel — Seed Data
--- Run this AFTER schema.sql in Supabase SQL Editor
--- Update REPLACE_WITH_REAL_* placeholders before running in production
+-- ============================================================
+-- OPTIONAL — Example seed data (NOT REQUIRED)
+-- ============================================================
+-- You do NOT need to run this file.
+-- All clients are added through the admin dashboard:
+--   /admin?key=YOUR_ADMIN_SECRET → click "+ New Location"
+--
+-- This file is kept only as a SQL example, in case you want to
+-- bulk-insert clients via SQL instead of using the form.
+-- ============================================================
 
 INSERT INTO clients (
   slug,

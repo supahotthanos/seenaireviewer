@@ -41,8 +41,10 @@ Requirements:
 
 Return ONLY the review text. No preamble, no quotes, no explanation.`
 
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5'
+
   const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5',
+    model,
     max_tokens: 500,
     messages: [
       {
@@ -53,7 +55,7 @@ Return ONLY the review text. No preamble, no quotes, no explanation.`
   })
 
   const content = message.content[0]
-  if (content.type !== 'text') {
+  if (!content || content.type !== 'text') {
     throw new Error('Unexpected response type from Anthropic API')
   }
 

@@ -17,8 +17,8 @@ const dmSans = DM_Sans({
 })
 
 export const metadata: Metadata = {
-  title: 'Share Your Experience',
-  description: 'Leave a review and share your experience',
+  title: 'SeenAI Reviews',
+  description: 'Powered by SeenAI — share your experience',
   robots: {
     index: false,
     follow: false,

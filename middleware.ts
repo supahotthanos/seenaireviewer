@@ -1,7 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+const PLACEHOLDER = 'change-me-to-a-long-random-string-32chars-min'
+const MIN_SECRET_LENGTH = 24
+
+// Constant-time compare that runs on the Edge runtime (no Node crypto).
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  }
+  return diff === 0
+}
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+
+  // Gate /admin pages at the edge. API routes under /api/admin enforce their
+  // own check via verifyAdminSecret — this just stops the page shell from
+  // rendering to unauthenticated browsers.
+  if (pathname === '/admin' || pathname.startsWith('/admin/')) {
+    const expected = process.env.ADMIN_SECRET
+    const valid =
+      expected &&
+      expected !== PLACEHOLDER &&
+      expected.length >= MIN_SECRET_LENGTH
+    const provided = request.nextUrl.searchParams.get('key')
+
+    if (!valid || !provided || !safeEqual(provided, expected!)) {
+      return new NextResponse('Not found', { status: 404 })
+    }
+  }
 
   // Only apply extra checks to API routes
   if (pathname.startsWith('/api/')) {

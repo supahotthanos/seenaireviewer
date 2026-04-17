@@ -58,3 +58,58 @@ export const submitFeedbackSchema = z.object({
 
 export type GenerateReviewInput = z.infer<typeof generateReviewSchema>
 export type SubmitFeedbackInput = z.infer<typeof submitFeedbackSchema>
+
+// ────────────────────────────────────────────────────────────
+// Admin: Create new client
+// ────────────────────────────────────────────────────────────
+export const createClientSchema = z.object({
+  slug: z
+    .string()
+    .min(3)
+    .max(60)
+    .regex(/^[a-z0-9-]+$/, 'Slug must be lowercase letters, numbers, and dashes only'),
+  business_name: z.string().min(2).max(100),
+  location_address: z.string().max(300).optional(),
+  location_city: z.string().min(2).max(100),
+  google_place_id: z.string().min(3).max(200),
+  notification_email: z
+    .string()
+    .min(5)
+    .max(500)
+    .refine(
+      (s) =>
+        s
+          .split(',')
+          .map((e) => e.trim())
+          .filter(Boolean)
+          .every((e) => z.string().email().safeParse(e).success),
+      'One or more emails are invalid'
+    )
+    .refine(
+      (s) => s.split(',').map((e) => e.trim()).filter(Boolean).length > 0,
+      'At least one email required'
+    ),
+  brand_color_primary: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a valid hex color')
+    .optional()
+    .default('#c9a87c'),
+  brand_color_secondary: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/, 'Must be a valid hex color')
+    .optional()
+    .default('#a01b1b'),
+  logo_url: z.string().url().optional().or(z.literal('')),
+  services: z
+    .array(z.string().min(1).max(100))
+    .min(1, 'At least one service required')
+    .max(50),
+  team_members: z
+    .array(z.string().min(1).max(100))
+    .min(1, 'At least one team member required')
+    .max(100),
+  daily_ai_limit: z.number().int().min(1).max(1000).optional().default(50),
+  is_active: z.boolean().optional().default(true),
+})
+
+export type CreateClientInput = z.infer<typeof createClientSchema>

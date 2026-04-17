@@ -1,14 +1,13 @@
-import Link from 'next/link'
-
 export default function ReviewNotFound() {
   return (
     <main className="min-h-screen flex items-center justify-center px-4 py-12">
       <div className="w-full max-w-md text-center">
         <div className="mb-8">
           <span className="font-serif text-4xl font-light">
-            <span className="text-[#a01b1b]">Lov</span>
-            <span className="text-[#c9a87c]">MedSpa</span>
+            <span className="text-[#a01b1b]">Seen</span>
+            <span className="text-[#c9a87c]">AI</span>
           </span>
+          <p className="text-white/30 text-xs font-sans tracking-widest uppercase mt-1">Reviews</p>
         </div>
 
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-xl">

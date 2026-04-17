@@ -16,6 +16,7 @@ export interface Client {
   notification_phone: string | null
   is_active: boolean
   monthly_review_limit: number
+  daily_ai_limit: number
   created_at: string
   updated_at: string
 }
@@ -50,29 +51,8 @@ export interface QRCode {
   created_at: string
 }
 
-// API input types
-export interface GenerateReviewInput {
-  client_id: string
-  customer_name: string
-  service: string
-  team_member: string
-  comments?: string
-  star_rating: number
-  source?: string
-  qr_code?: string
-  honeypot?: string
-}
-
-export interface SubmitFeedbackInput {
-  client_id: string
-  customer_name: string
-  contact?: string
-  feedback_text: string
-  star_rating: number
-  source?: string
-  qr_code?: string
-  honeypot?: string
-}
+// API input types — inferred from Zod schemas in lib/validation.ts
+export type { GenerateReviewInput, SubmitFeedbackInput, CreateClientInput } from './validation'
 
 // Funnel step states
 export type FunnelStep =

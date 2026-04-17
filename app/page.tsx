@@ -3,12 +3,12 @@ export default function HomePage() {
     <main className="min-h-screen flex items-center justify-center px-4">
       <div className="text-center">
         <div className="mb-4">
-          <span className="font-serif text-4xl font-light">
-            <span className="text-[#a01b1b]">Lov</span>
-            <span className="text-[#c9a87c]">MedSpa</span>
+          <span className="font-serif text-5xl font-light tracking-wide">
+            <span className="text-[#a01b1b]">Seen</span>
+            <span className="text-[#c9a87c]">AI</span>
           </span>
         </div>
-        <p className="text-white/40 text-sm font-sans">Review Funnel</p>
+        <p className="text-white/40 text-sm font-sans tracking-widest uppercase">Reviews</p>
       </div>
     </main>
   )

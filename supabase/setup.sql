@@ -1,11 +1,16 @@
--- LovMedSpa Review Funnel — Database Schema
--- Run this in Supabase SQL Editor
+-- ============================================================
+-- SeenAI Review Funnel — One-shot database setup
+-- ============================================================
+-- Safe to run multiple times. Run this ONCE in Supabase SQL Editor
+-- after creating your project. That's it.
+--
+-- Supabase dashboard → SQL Editor → New query → paste this file → Run.
+-- ============================================================
 
--- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ============================================================
--- CLIENTS TABLE
+-- CLIENTS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS clients (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -22,13 +27,21 @@ CREATE TABLE IF NOT EXISTS clients (
   notification_email TEXT NOT NULL,
   notification_phone TEXT,
   is_active BOOLEAN DEFAULT true,
-  monthly_review_limit INTEGER DEFAULT 100,
+  monthly_review_limit INTEGER DEFAULT 1000,
+  daily_ai_limit INTEGER DEFAULT 50,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Add columns for installs that pre-date them (idempotent)
+ALTER TABLE clients
+  ADD COLUMN IF NOT EXISTS daily_ai_limit INTEGER DEFAULT 50,
+  ADD COLUMN IF NOT EXISTS logo_url TEXT,
+  ADD COLUMN IF NOT EXISTS brand_color_primary TEXT DEFAULT '#c9a87c',
+  ADD COLUMN IF NOT EXISTS brand_color_secondary TEXT DEFAULT '#a01b1b';
+
 -- ============================================================
--- REVIEWS TABLE
+-- REVIEWS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS reviews (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -50,13 +63,12 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Index for analytics queries
 CREATE INDEX IF NOT EXISTS reviews_client_id_idx ON reviews(client_id);
 CREATE INDEX IF NOT EXISTS reviews_created_at_idx ON reviews(created_at DESC);
 CREATE INDEX IF NOT EXISTS reviews_review_type_idx ON reviews(review_type);
 
 -- ============================================================
--- QR CODES TABLE
+-- QR CODES
 -- ============================================================
 CREATE TABLE IF NOT EXISTS qr_codes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -74,53 +86,55 @@ CREATE INDEX IF NOT EXISTS qr_codes_client_id_idx ON qr_codes(client_id);
 -- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
-
--- CLIENTS: Enable RLS
 ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE qr_codes ENABLE ROW LEVEL SECURITY;
 
--- Public can read active clients (needed to render the funnel)
+-- Drop old policies then recreate (so this file is safely re-runnable)
+DROP POLICY IF EXISTS "Public reads active clients" ON clients;
+DROP POLICY IF EXISTS "Admin manages clients" ON clients;
+DROP POLICY IF EXISTS "Anyone can submit reviews" ON reviews;
+DROP POLICY IF EXISTS "Admin reads reviews" ON reviews;
+DROP POLICY IF EXISTS "Admin updates reviews" ON reviews;
+DROP POLICY IF EXISTS "Public reads active QR codes" ON qr_codes;
+DROP POLICY IF EXISTS "Admin manages QR codes" ON qr_codes;
+
+-- Public can read active clients (funnel page needs this)
 CREATE POLICY "Public reads active clients"
   ON clients FOR SELECT
   USING (is_active = true);
 
--- Only authenticated users (admins) can insert/update/delete clients
+-- Authenticated role can manage clients. The server routes use the
+-- service-role key, which bypasses RLS entirely — this policy only
+-- applies if you later add a Supabase Auth dashboard.
 CREATE POLICY "Admin manages clients"
   ON clients FOR ALL
   USING (auth.role() = 'authenticated');
 
--- REVIEWS: Enable RLS
-ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
-
--- Anyone (anon) can insert a review — this is the public submission
+-- Anyone (anon) can submit a review — public funnel
 CREATE POLICY "Anyone can submit reviews"
   ON reviews FOR INSERT
   WITH CHECK (true);
 
--- Only authenticated users can read reviews
 CREATE POLICY "Admin reads reviews"
   ON reviews FOR SELECT
   USING (auth.role() = 'authenticated');
 
--- Only authenticated users can update reviews (e.g., mark copied_to_clipboard)
 CREATE POLICY "Admin updates reviews"
   ON reviews FOR UPDATE
   USING (auth.role() = 'authenticated');
 
--- QR CODES: Enable RLS
-ALTER TABLE qr_codes ENABLE ROW LEVEL SECURITY;
-
--- Public can read active QR codes (needed for redirect)
+-- Public can read active QR codes (redirect route)
 CREATE POLICY "Public reads active QR codes"
   ON qr_codes FOR SELECT
   USING (is_active = true);
 
--- Only authenticated users can manage QR codes
 CREATE POLICY "Admin manages QR codes"
   ON qr_codes FOR ALL
   USING (auth.role() = 'authenticated');
 
 -- ============================================================
--- UPDATED_AT TRIGGER
+-- updated_at TRIGGER
 -- ============================================================
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -128,15 +142,15 @@ BEGIN
   NEW.updated_at = now();
   RETURN NEW;
 END;
-$$ language 'plpgsql';
+$$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS update_clients_updated_at ON clients;
 CREATE TRIGGER update_clients_updated_at
   BEFORE UPDATE ON clients
   FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column();
 
 -- ============================================================
--- RPC: Increment QR scan count
--- Called from the /q/[shortCode] redirect route
+-- RPC: increment QR scan count (called from /q/[shortCode])
 -- ============================================================
 CREATE OR REPLACE FUNCTION increment_qr_scan(qr_id UUID)
 RETURNS void AS $$
@@ -144,3 +158,7 @@ BEGIN
   UPDATE qr_codes SET scan_count = scan_count + 1 WHERE id = qr_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- ============================================================
+-- Done. Next: open /admin?key=YOUR_ADMIN_SECRET → + New Location
+-- ============================================================

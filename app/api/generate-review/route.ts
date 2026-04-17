@@ -3,38 +3,63 @@ import { createHash } from 'crypto'
 import { generateReviewSchema } from '@/lib/validation'
 import { generateAEOReview } from '@/lib/anthropic'
 import { supabaseServer } from '@/lib/supabase-server'
-import { getAIRateLimiter, checkRateLimit } from '@/lib/rate-limit'
+import {
+  getAIRateLimiter,
+  getAIDailyIpLimiter,
+  checkRateLimit,
+  checkClientDailyAILimit,
+  checkGlobalMonthlyAILimit,
+} from '@/lib/rate-limit'
 
-// Sanitize string — strip HTML tags and trim
 function sanitize(str: string, maxLen = 500): string {
   return str.replace(/<[^>]*>/g, '').trim().slice(0, maxLen)
 }
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Hash the IP address
+    // ────────────────────────────────────────
+    // 1. Hash the IP
+    // ────────────────────────────────────────
     const forwardedFor = request.headers.get('x-forwarded-for')
     const ip = forwardedFor ? forwardedFor.split(',')[0].trim() : 'unknown'
     const ipHash = createHash('sha256').update(ip).digest('hex')
 
-    // 2. Rate limit check
-    const limiter = getAIRateLimiter()
-    const { allowed, remaining, reset } = await checkRateLimit(limiter, `ip:${ipHash}`)
-
-    if (!allowed) {
+    // ────────────────────────────────────────
+    // 2. Per-IP rate limits (hourly + daily)
+    // ────────────────────────────────────────
+    const hourlyCheck = await checkRateLimit(getAIRateLimiter(), `ip:${ipHash}`)
+    if (!hourlyCheck.allowed) {
       return NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
-        {
-          status: 429,
-          headers: {
-            'X-RateLimit-Remaining': String(remaining),
-            'X-RateLimit-Reset': String(reset),
-          },
-        }
+        { error: 'You\'ve made too many requests recently. Please try again in an hour.' },
+        { status: 429, headers: { 'X-RateLimit-Remaining': '0' } }
       )
     }
 
-    // 3. Parse and validate request body
+    const dailyIpCheck = await checkRateLimit(getAIDailyIpLimiter(), `ip:${ipHash}`)
+    if (!dailyIpCheck.allowed) {
+      return NextResponse.json(
+        { error: 'Daily request limit reached for this device. Please try again tomorrow.' },
+        { status: 429 }
+      )
+    }
+
+    // ────────────────────────────────────────
+    // 3. Global monthly spend cap (protects your Anthropic credits)
+    // ────────────────────────────────────────
+    const globalCheck = await checkGlobalMonthlyAILimit()
+    if (!globalCheck.allowed) {
+      console.warn(
+        `[generate-review] GLOBAL MONTHLY LIMIT REACHED: ${globalCheck.used}/${globalCheck.limit}`
+      )
+      return NextResponse.json(
+        { error: 'Service temporarily unavailable. Please try again later.' },
+        { status: 503 }
+      )
+    }
+
+    // ────────────────────────────────────────
+    // 4. Parse + validate request
+    // ────────────────────────────────────────
     let body: unknown
     try {
       body = await request.json()
@@ -50,13 +75,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { client_id, customer_name, service, team_member, comments, star_rating, source, qr_code } =
-      parsed.data
+    const {
+      client_id,
+      customer_name,
+      service,
+      team_member,
+      comments,
+      star_rating,
+      source,
+      qr_code,
+    } = parsed.data
 
-    // 4. Honeypot check (already validated by Zod — honeypot max length 0)
-    // If we got here, honeypot is empty (valid)
-
-    // 5. Fetch client from Supabase
+    // ────────────────────────────────────────
+    // 5. Fetch client
+    // ────────────────────────────────────────
     const { data: client, error: clientError } = await supabaseServer
       .from('clients')
       .select('*')
@@ -68,7 +100,26 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Client not found' }, { status: 404 })
     }
 
-    // 6. Generate review via Anthropic
+    // ────────────────────────────────────────
+    // 6. Per-client daily AI limit
+    // ────────────────────────────────────────
+    const clientCheck = await checkClientDailyAILimit(client.id, client.daily_ai_limit ?? 50)
+    if (!clientCheck.allowed) {
+      console.warn(
+        `[generate-review] Client ${client.slug} hit daily limit: ${clientCheck.used}/${clientCheck.limit}`
+      )
+      return NextResponse.json(
+        {
+          error:
+            'This location has reached its daily review limit. Please try again tomorrow.',
+        },
+        { status: 429 }
+      )
+    }
+
+    // ────────────────────────────────────────
+    // 7. Generate AI review
+    // ────────────────────────────────────────
     const generatedReview = await generateAEOReview({
       client,
       customerName: sanitize(customer_name, 100),
@@ -77,7 +128,9 @@ export async function POST(request: NextRequest) {
       comments: comments ? sanitize(comments, 500) : undefined,
     })
 
-    // 7. Insert review row
+    // ────────────────────────────────────────
+    // 8. Insert review row
+    // ────────────────────────────────────────
     const { data: reviewRow, error: insertError } = await supabaseServer
       .from('reviews')
       .insert({
@@ -98,7 +151,6 @@ export async function POST(request: NextRequest) {
 
     if (insertError) {
       console.error('[generate-review] Insert error:', insertError.message)
-      // Still return the review even if DB insert fails
     }
 
     return NextResponse.json({
@@ -106,7 +158,10 @@ export async function POST(request: NextRequest) {
       review_id: reviewRow?.id ?? null,
     })
   } catch (error) {
-    console.error('[generate-review] Unhandled error:', error instanceof Error ? error.message : 'unknown')
+    console.error(
+      '[generate-review] Unhandled error:',
+      error instanceof Error ? error.message : 'unknown'
+    )
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }

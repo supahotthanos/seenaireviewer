@@ -12,6 +12,7 @@ import { GlassTextarea } from './ui/GlassTextarea'
 import { GlassButton } from './ui/GlassButton'
 import { StepIndicator } from './ui/StepIndicator'
 import { Toast } from './ui/Toast'
+import { BrandHeader } from './BrandHeader'
 
 interface ReviewFunnelProps {
   client: Client
@@ -223,22 +224,8 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
     }
   }
 
-  // ──────────────────────────────────────────────────────────
-  // RENDER: Brand Header
-  // ──────────────────────────────────────────────────────────
-  const BrandHeader = () => (
-    <div className="text-center mb-8">
-      <div className="mb-3">
-        <span className="font-serif text-4xl font-light tracking-wide">
-          <span className="text-[#a01b1b]">Lov</span>
-          <span className="text-[#c9a87c]">MedSpa</span>
-        </span>
-      </div>
-      {client.location_address && (
-        <p className="text-white/40 text-sm font-sans">{client.location_address}</p>
-      )}
-    </div>
-  )
+  // Brand header is now imported from components/BrandHeader.tsx
+  // It renders the business name with two-tone color split using brand colors
 
   // ──────────────────────────────────────────────────────────
   // STEP: Rating
@@ -246,7 +233,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'rating') {
     return (
       <div className="animate-slide-up">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard className="text-center">
           <h1 className="font-serif text-3xl text-white mb-2 font-light">
             How was your visit?
@@ -273,7 +260,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'positive-form') {
     return (
       <div className="animate-slide-up">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard>
           <div className="mb-6">
             <StepIndicator steps={3} current={1} />
@@ -360,7 +347,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'generating') {
     return (
       <div className="animate-fade-in">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard className="text-center">
           <div className="mb-6">
             <StepIndicator steps={3} current={2} />
@@ -385,7 +372,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'review-ready') {
     return (
       <div className="animate-slide-up">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard>
           <div className="mb-6">
             <StepIndicator steps={3} current={3} />
@@ -456,7 +443,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'negative-form') {
     return (
       <div className="animate-slide-up">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard>
           <div className="flex items-center gap-2 mb-1">
             <StarRating value={rating} onChange={() => {}} size="sm" readonly />
@@ -542,7 +529,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   if (step === 'feedback-sent') {
     return (
       <div className="animate-slide-up">
-        <BrandHeader />
+        <BrandHeader client={client} />
         <GlassCard className="text-center">
           <div className="flex justify-center mb-5">
             <div className="w-16 h-16 rounded-full bg-[#c9a87c]/10 border border-[#c9a87c]/20 flex items-center justify-center">

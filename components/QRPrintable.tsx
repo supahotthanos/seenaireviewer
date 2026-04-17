@@ -1,8 +1,12 @@
+/* eslint-disable @next/next/no-img-element */
 interface QRPrintableProps {
   qrImageUrl: string
   shortCode: string
-  businessName?: string
+  businessName: string
   location?: string
+  brandColorPrimary?: string
+  brandColorSecondary?: string
+  logoUrl?: string | null
   size?: 'business-card' | 'desk-card' | 'sticker'
 }
 
@@ -15,11 +19,60 @@ const sizeStyles = {
 export function QRPrintable({
   qrImageUrl,
   shortCode,
-  businessName = 'LovMedSpa',
-  location = '1 Boerum Pl Suite 252, Brooklyn, NY',
+  businessName,
+  location,
+  brandColorPrimary = '#c9a87c',
+  brandColorSecondary = '#a01b1b',
+  logoUrl,
   size = 'desk-card',
 }: QRPrintableProps) {
   const { width, height, qrSize } = sizeStyles[size]
+
+  // Smart wordmark split logic — same as BrandHeader
+  function renderName() {
+    if (logoUrl) {
+      return (
+        <img
+          src={logoUrl}
+          alt={businessName}
+          style={{ height: '40px', width: 'auto', objectFit: 'contain' }}
+        />
+      )
+    }
+
+    if (!businessName.includes(' ')) {
+      const camelMatch = businessName.match(/^([A-Z][a-z]+)([A-Z].*)/)
+      if (camelMatch) {
+        return (
+          <span style={{ fontSize: '22px', fontFamily: 'Georgia, serif', fontWeight: 300 }}>
+            <span style={{ color: brandColorSecondary }}>{camelMatch[1]}</span>
+            <span style={{ color: brandColorPrimary }}>{camelMatch[2]}</span>
+          </span>
+        )
+      }
+      return (
+        <span style={{ fontSize: '22px', fontFamily: 'Georgia, serif', fontWeight: 300, color: brandColorPrimary }}>
+          {businessName}
+        </span>
+      )
+    }
+
+    const parts = businessName.split(' ')
+    if (parts.length === 2) {
+      return (
+        <span style={{ fontSize: '22px', fontFamily: 'Georgia, serif', fontWeight: 300 }}>
+          <span style={{ color: brandColorSecondary }}>{parts[0]}</span>{' '}
+          <span style={{ color: brandColorPrimary }}>{parts[1]}</span>
+        </span>
+      )
+    }
+
+    return (
+      <span style={{ fontSize: '20px', fontFamily: 'Georgia, serif', fontWeight: 300, color: brandColorPrimary }}>
+        {businessName}
+      </span>
+    )
+  }
 
   return (
     <div
@@ -39,45 +92,29 @@ export function QRPrintable({
         gap: '12px',
       }}
     >
-      {/* Brand Logo */}
-      <div style={{ textAlign: 'center', marginBottom: '4px' }}>
-        <span style={{ fontSize: '22px', fontFamily: 'Georgia, serif', fontWeight: 300 }}>
-          <span style={{ color: '#a01b1b' }}>Lov</span>
-          <span style={{ color: '#c9a87c' }}>MedSpa</span>
-        </span>
-      </div>
+      <div style={{ textAlign: 'center', marginBottom: '4px' }}>{renderName()}</div>
 
-      {/* Call to action */}
       <p style={{ fontSize: '11px', color: '#6b7280', margin: 0, textAlign: 'center', letterSpacing: '0.05em', textTransform: 'uppercase' }}>
         Loved your visit?
       </p>
 
-      {/* QR Code */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={qrImageUrl}
         alt={`QR code for ${businessName} reviews`}
-        style={{
-          width: qrSize,
-          height: qrSize,
-          imageRendering: 'pixelated',
-        }}
+        style={{ width: qrSize, height: qrSize, imageRendering: 'pixelated' }}
       />
 
-      {/* Headline */}
       <p style={{ fontSize: '13px', fontWeight: 600, color: '#111827', margin: 0, textAlign: 'center' }}>
         Scan to share your experience
       </p>
 
-      {/* Location */}
-      <p style={{ fontSize: '10px', color: '#9ca3af', margin: 0, textAlign: 'center' }}>
-        {location}
-      </p>
+      {location && (
+        <p style={{ fontSize: '10px', color: '#9ca3af', margin: 0, textAlign: 'center' }}>
+          {location}
+        </p>
+      )}
 
-      {/* Short code (for debugging/reference) */}
-      <p style={{ fontSize: '8px', color: '#d1d5db', margin: 0 }}>
-        {shortCode}
-      </p>
+      <p style={{ fontSize: '8px', color: '#d1d5db', margin: 0 }}>{shortCode}</p>
 
       <style>{`
         @media print {
