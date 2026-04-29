@@ -1,0 +1,552 @@
+// AEO ranking-test providers — OpenAI + Google only.
+//
+// API keys are pasted by the user, stored in localStorage on their device
+// only. They never reach our server. All API calls go BROWSER → PROVIDER
+// directly (with cache: 'no-store', credentials: 'omit',
+// referrerPolicy: 'no-referrer' so that nothing leaks into the request).
+//
+// Pricing here is approximate (April 2026 published rates) and is used for
+// the daily-spend rate-limit guardrail in AEOTester. Where two prices are
+// listed for tiered context windows, we use the under-200k tier — the
+// guardrail will slightly under-count cost on long prompts.
+
+export type ProviderId = 'openai' | 'google' | 'anthropic'
+
+export interface ModelConfig {
+  id: string
+  name: string
+  webAccess: boolean
+  // USD per 1 million tokens
+  priceIn: number
+  priceOut: number
+  description?: string
+}
+
+export interface ProviderConfig {
+  id: ProviderId
+  name: string
+  authPlaceholder: string
+  helpUrl: string
+  consoleUrl: string
+  models: ModelConfig[]
+}
+
+export const PROVIDERS: ProviderConfig[] = [
+  {
+    id: 'openai',
+    name: 'OpenAI (ChatGPT)',
+    authPlaceholder: 'sk-...',
+    helpUrl: 'https://platform.openai.com/api-keys',
+    consoleUrl: 'https://platform.openai.com/usage',
+    models: [
+      // ── GPT-5 family (April 2026 current) ──────────────────────
+      {
+        id: 'gpt-5.5',
+        name: 'GPT-5.5',
+        webAccess: true,
+        priceIn: 2.5,
+        priceOut: 15,
+        description: 'Newest flagship.',
+      },
+      {
+        id: 'gpt-5.4',
+        name: 'GPT-5.4',
+        webAccess: true,
+        priceIn: 2.5,
+        priceOut: 15,
+        description: 'Released March 5, 2026.',
+      },
+      {
+        id: 'gpt-5.4-mini',
+        name: 'GPT-5.4 mini',
+        webAccess: true,
+        priceIn: 0.5,
+        priceOut: 3,
+        description: 'Mid-range, ~5× cheaper than full 5.4.',
+      },
+      {
+        id: 'gpt-5.4-nano',
+        name: 'GPT-5.4 nano',
+        webAccess: true,
+        priceIn: 0.2,
+        priceOut: 1.25,
+        description: 'Cheapest in the 5.4 family.',
+      },
+      // Note: GPT-5.4 Pro is not exposed via the chat/completions endpoint
+      // (Responses API only). Removed from the batch to keep all 27+ runs
+      // simple. Use the Responses API separately if you need it.
+      {
+        id: 'gpt-5',
+        name: 'GPT-5',
+        webAccess: true,
+        priceIn: 1.25,
+        priceOut: 10,
+        description: 'Original GPT-5 release.',
+      },
+      // ── Reasoning specialists ──────────────────────────────────
+      {
+        id: 'o3',
+        name: 'o3',
+        webAccess: true,
+        priceIn: 2,
+        priceOut: 8,
+        description: 'Reasoning-specialized.',
+      },
+      {
+        id: 'o3-mini',
+        name: 'o3-mini',
+        webAccess: true,
+        priceIn: 1.1,
+        priceOut: 4.4,
+        description: 'Cheap reasoning option, between o3 and o4-mini.',
+      },
+      {
+        id: 'o4-mini',
+        name: 'o4-mini',
+        webAccess: true,
+        priceIn: 1.1,
+        priceOut: 4.4,
+        description: 'Newer cheaper reasoning.',
+      },
+      // ── Long-context + GPT-4 legacy ────────────────────────────
+      {
+        id: 'gpt-4.1',
+        name: 'GPT-4.1',
+        webAccess: true,
+        priceIn: 2,
+        priceOut: 8,
+        description: 'Long-context model, still served.',
+      },
+      {
+        id: 'gpt-4o',
+        name: 'GPT-4o',
+        webAccess: true,
+        priceIn: 2.5,
+        priceOut: 10,
+        description: 'Legacy flagship — what most ChatGPT API integrations still call.',
+      },
+      {
+        id: 'gpt-4o-mini',
+        name: 'GPT-4o mini',
+        webAccess: true,
+        priceIn: 0.15,
+        priceOut: 0.6,
+        description: 'Cheap still-served. Good for high-volume AEO checks.',
+      },
+      {
+        id: 'gpt-4-turbo',
+        name: 'GPT-4 Turbo',
+        webAccess: true,
+        priceIn: 10,
+        priceOut: 30,
+        description: 'Older flagship, still served.',
+      },
+    ],
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic (Claude)',
+    authPlaceholder: 'sk-ant-...',
+    helpUrl: 'https://console.anthropic.com/settings/keys',
+    consoleUrl: 'https://console.anthropic.com/settings/usage',
+    models: [
+      {
+        id: 'claude-opus-4-7',
+        name: 'Claude Opus 4.7',
+        webAccess: true,
+        priceIn: 5,
+        priceOut: 25,
+        description: 'Newest Claude flagship (April 16, 2026).',
+      },
+      {
+        id: 'claude-sonnet-4-6',
+        name: 'Claude Sonnet 4.6',
+        webAccess: true,
+        priceIn: 3,
+        priceOut: 15,
+        description: 'Mid-tier workhorse.',
+      },
+      {
+        id: 'claude-sonnet-4-5',
+        name: 'Claude Sonnet 4.5',
+        webAccess: true,
+        priceIn: 3,
+        priceOut: 15,
+        description: 'Previous Sonnet, still widely served.',
+      },
+      {
+        id: 'claude-haiku-4-5',
+        name: 'Claude Haiku 4.5',
+        webAccess: true,
+        priceIn: 1,
+        priceOut: 5,
+        description: 'Cheapest, fastest Claude.',
+      },
+    ],
+  },
+  {
+    id: 'google',
+    name: 'Google (Gemini)',
+    authPlaceholder: 'AIza...',
+    helpUrl: 'https://aistudio.google.com/app/apikey',
+    consoleUrl: 'https://aistudio.google.com/',
+    models: [
+      // ── Gemini 3.1 (April 2026 current — still preview) ────────
+      {
+        id: 'gemini-3.1-pro-preview',
+        name: 'Gemini 3.1 Pro',
+        webAccess: true,
+        priceIn: 2,
+        priceOut: 12,
+        description: 'Newest flagship preview. Google Search grounded.',
+      },
+      {
+        id: 'gemini-3.1-flash-lite-preview',
+        name: 'Gemini 3.1 Flash-Lite',
+        webAccess: true,
+        priceIn: 0.1,
+        priceOut: 0.4,
+        description: 'Cheapest 3.1 tier preview.',
+      },
+      // ── Gemini 3 (preview tier) ───────────────────────────────
+      {
+        id: 'gemini-3-pro-preview',
+        name: 'Gemini 3 Pro',
+        webAccess: true,
+        priceIn: 1.5,
+        priceOut: 7.5,
+        description: 'Mid-flagship preview.',
+      },
+      {
+        id: 'gemini-3-flash-preview',
+        name: 'Gemini 3 Flash',
+        webAccess: true,
+        priceIn: 0.3,
+        priceOut: 2.5,
+        description: 'Balanced 3-gen Flash preview.',
+      },
+      // ── Gemini 2.5 (still served, lots of integrations use it) ─
+      {
+        id: 'gemini-2.5-pro',
+        name: 'Gemini 2.5 Pro',
+        webAccess: true,
+        priceIn: 1.25,
+        priceOut: 10,
+        description: '2.5 flagship with grounding.',
+      },
+      {
+        id: 'gemini-2.5-flash',
+        name: 'Gemini 2.5 Flash',
+        webAccess: true,
+        priceIn: 0.1,
+        priceOut: 3,
+        description: 'Fast + cheap with grounding.',
+      },
+      {
+        id: 'gemini-2.5-flash-lite',
+        name: 'Gemini 2.5 Flash-Lite',
+        webAccess: true,
+        priceIn: 0.1,
+        priceOut: 0.4,
+        description: 'Cheapest 2.5 tier.',
+      },
+    ],
+  },
+]
+
+export interface RunRequest {
+  providerId: ProviderId
+  model: ModelConfig
+  apiKey: string
+  prompt: string
+  // 0 = deterministic (best for reproducible ranking checks).
+  // 1 = default API behavior, matches what a typical user would see.
+  temperature?: number
+  // When false, disable provider-level web search so the answer reflects
+  // ONLY the model's training-data brand awareness. When undefined or true,
+  // we attach the provider's web-search tool (default = current behavior).
+  // Useful for separating "trained brand awareness" from "live ranking".
+  searchEnabled?: boolean
+}
+
+export interface RunResult {
+  text: string
+  tokensIn: number
+  tokensOut: number
+  costUsd: number
+  durationMs: number
+  citations?: string[] // URLs from web-enabled models that include them
+  // The actual snapshot/fingerprint the provider resolved our alias to.
+  // Critical for longitudinal AEO data — when this changes, the provider
+  // silently shipped new weights and our trend chart needs a re-baseline.
+  modelSnapshot?: string
+  // Echo of whether the provider's web-search tool was attached to this
+  // call. Lets clients tag history entries straight from the response
+  // without having to thread their own flag through.
+  searchEnabled: boolean
+}
+
+// Common fetch options for every browser → provider API call.
+// Goal: each request is treated as if it's the first time the question is
+// being asked — no cached responses, no Referer header that could trigger
+// per-domain rate limits or routing tweaks, no credentialed cookies.
+const ISOLATED_FETCH: RequestInit = {
+  cache: 'no-store',
+  credentials: 'omit',
+  referrerPolicy: 'no-referrer',
+}
+
+function calcCost(m: ModelConfig, tokensIn: number, tokensOut: number): number {
+  return (tokensIn * m.priceIn) / 1_000_000 + (tokensOut * m.priceOut) / 1_000_000
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Per-provider runners
+// ────────────────────────────────────────────────────────────────────
+
+// Models known NOT to support OpenAI's Responses API + web_search_preview.
+// Everything modern (gpt-4o+, gpt-4.1+, gpt-5.x, o-series) supports it.
+const OPENAI_NO_WEB_SEARCH = new Set(['gpt-3.5-turbo'])
+
+async function runOpenAI(req: RunRequest): Promise<RunResult> {
+  const start = Date.now()
+  const id = req.model.id
+  const isReasoning = /^o\d/i.test(id) // o1, o1-mini, o3, o3-mini, o4-mini
+  // GPT-5 (original) and GPT-5.5 lock temperature to default (1) — same
+  // as reasoning models. GPT-5.4 family allows custom temperatures.
+  const isLockedTemp = isReasoning || /^gpt-5(\.5)?$/i.test(id)
+  const supportsWebSearch = !OPENAI_NO_WEB_SEARCH.has(id)
+  const searchOn = req.searchEnabled !== false
+
+  // ── Modern models → Responses API ──────────────────────────────
+  // The Responses API (POST /v1/responses) is the modern endpoint that
+  // supports tools like web_search_preview. We use it for any model
+  // that can; tools are attached only when searchEnabled is on, so the
+  // SAME endpoint also handles the "training-data only" case.
+  if (supportsWebSearch) {
+    const body: Record<string, unknown> = {
+      model: id,
+      input: req.prompt,
+    }
+    if (searchOn) body.tools = [{ type: 'web_search_preview' }]
+    // max_output_tokens: enough for the answer + reasoning headroom for
+    // thinking-style models. Billed only for tokens actually used.
+    body.max_output_tokens = isLockedTemp ? 4000 : 1500
+    if (!isLockedTemp) body.temperature = req.temperature ?? 1
+
+    const res = await fetch('https://api.openai.com/v1/responses', {
+      ...ISOLATED_FETCH,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${req.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`OpenAI ${res.status}: ${err.slice(0, 300)}`)
+    }
+    const data = await res.json()
+    // Response shape: { output: [{type:'web_search_call',...}, {type:'message', content:[{type:'output_text', text}]}], usage }
+    let text = ''
+    const citations: string[] = []
+    for (const block of data.output || []) {
+      if (block.type === 'message' && Array.isArray(block.content)) {
+        for (const c of block.content) {
+          if (c.type === 'output_text' && typeof c.text === 'string') {
+            text += c.text
+          }
+          // OpenAI inlines citations as annotations on output_text
+          if (Array.isArray(c.annotations)) {
+            for (const ann of c.annotations) {
+              if (ann.type === 'url_citation' && ann.url) citations.push(ann.url)
+            }
+          }
+        }
+      }
+    }
+    const tokensIn = data.usage?.input_tokens ?? 0
+    const tokensOut = data.usage?.output_tokens ?? 0
+    return {
+      text: text.trim(),
+      tokensIn,
+      tokensOut,
+      costUsd: calcCost(req.model, tokensIn, tokensOut),
+      durationMs: Date.now() - start,
+      citations: citations.length ? Array.from(new Set(citations)) : undefined,
+      // OpenAI Responses API echoes the resolved model snapshot
+      modelSnapshot: typeof data.model === 'string' ? data.model : undefined,
+      searchEnabled: searchOn,
+    }
+  }
+
+  // ── Legacy chat completions for models without web search ──────
+  const body: Record<string, unknown> = {
+    model: id,
+    messages: [{ role: 'user', content: req.prompt }],
+    max_tokens: 1500,
+    temperature: req.temperature ?? 1,
+  }
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    ...ISOLATED_FETCH,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${req.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`OpenAI ${res.status}: ${err.slice(0, 300)}`)
+  }
+  const data = await res.json()
+  const text = data.choices?.[0]?.message?.content || ''
+  const tokensIn = data.usage?.prompt_tokens ?? 0
+  const tokensOut = data.usage?.completion_tokens ?? 0
+  return {
+    text,
+    tokensIn,
+    tokensOut,
+    costUsd: calcCost(req.model, tokensIn, tokensOut),
+    durationMs: Date.now() - start,
+    // Chat completions returns system_fingerprint when available
+    modelSnapshot:
+      (typeof data.system_fingerprint === 'string' && data.system_fingerprint) ||
+      (typeof data.model === 'string' ? data.model : undefined),
+    // Legacy chat-completions branch never attaches a search tool —
+    // these are search-incapable models that fall through to here.
+    searchEnabled: false,
+  }
+}
+
+async function runAnthropic(req: RunRequest): Promise<RunResult> {
+  const start = Date.now()
+  // Enable Anthropic's web search tool so Claude does live research instead
+  // of guessing from training data. ~$0.01/search added to token cost.
+  // When searchEnabled is explicitly false we omit the tools array entirely
+  // so Claude answers from training data only.
+  const searchOn = req.searchEnabled !== false
+  const body: Record<string, unknown> = {
+    model: req.model.id,
+    max_tokens: 2000,
+    temperature: req.temperature ?? 1,
+    messages: [{ role: 'user', content: req.prompt }],
+  }
+  if (searchOn) {
+    body.tools = [{ type: 'web_search_20250305', name: 'web_search' }]
+  }
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    ...ISOLATED_FETCH,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': req.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Anthropic ${res.status}: ${err.slice(0, 300)}`)
+  }
+  const data = await res.json()
+  // Response is a stream of blocks: 'text' (Claude's answer chunks),
+  // 'server_tool_use' (Claude calling search), 'web_search_tool_result'
+  // (search results). Concatenate all the text blocks for the final answer.
+  const text =
+    data.content
+      ?.filter((c: { type: string }) => c.type === 'text')
+      .map((c: { text: string }) => c.text)
+      .join('\n')
+      .trim() || ''
+  const tokensIn = data.usage?.input_tokens ?? 0
+  const tokensOut = data.usage?.output_tokens ?? 0
+  // Pull citation URLs out of any tool result blocks
+  const citations: string[] = []
+  for (const block of data.content || []) {
+    if (block.type === 'web_search_tool_result' && Array.isArray(block.content)) {
+      for (const result of block.content) {
+        if (result.url) citations.push(result.url)
+      }
+    }
+  }
+  return {
+    text,
+    tokensIn,
+    tokensOut,
+    costUsd: calcCost(req.model, tokensIn, tokensOut),
+    durationMs: Date.now() - start,
+    citations: citations.length ? citations : undefined,
+    // Anthropic returns the resolved model snapshot in `model`
+    modelSnapshot: typeof data.model === 'string' ? data.model : undefined,
+    searchEnabled: searchOn,
+  }
+}
+
+async function runGoogle(req: RunRequest): Promise<RunResult> {
+  const start = Date.now()
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${req.model.id}:generateContent?key=${encodeURIComponent(req.apiKey)}`
+  const body: Record<string, unknown> = {
+    contents: [{ parts: [{ text: req.prompt }], role: 'user' }],
+    generationConfig: {
+      maxOutputTokens: 1500,
+      temperature: req.temperature ?? 1,
+    },
+  }
+  // Gemini grounding tool is only attached when both the model supports it
+  // AND search is requested for this run. Skipping it makes Gemini answer
+  // from its training data only — same intent as the OpenAI/Anthropic
+  // search-off branches above.
+  if (req.model.webAccess && req.searchEnabled !== false) {
+    body.tools = [{ google_search: {} }]
+  }
+  const res = await fetch(url, {
+    ...ISOLATED_FETCH,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Google ${res.status}: ${err.slice(0, 300)}`)
+  }
+  const data = await res.json()
+  const cand = data.candidates?.[0]
+  const text =
+    cand?.content?.parts
+      ?.map((p: { text?: string }) => p.text || '')
+      .join('') || ''
+  const tokensIn = data.usageMetadata?.promptTokenCount ?? 0
+  const tokensOut = data.usageMetadata?.candidatesTokenCount ?? 0
+  // Grounding metadata sometimes carries source URLs
+  const citations: string[] =
+    cand?.groundingMetadata?.groundingChunks
+      ?.map((c: { web?: { uri?: string } }) => c.web?.uri)
+      .filter(Boolean) || []
+  return {
+    text,
+    tokensIn,
+    tokensOut,
+    costUsd: calcCost(req.model, tokensIn, tokensOut),
+    durationMs: Date.now() - start,
+    citations: citations.length ? citations : undefined,
+    // Gemini returns the resolved model in `modelVersion`
+    modelSnapshot: typeof data.modelVersion === 'string' ? data.modelVersion : undefined,
+    // Search is attached only when the model supports grounding AND the
+    // caller didn't explicitly disable it; mirror that here.
+    searchEnabled: req.model.webAccess && req.searchEnabled !== false,
+  }
+}
+
+export async function runProvider(req: RunRequest): Promise<RunResult> {
+  switch (req.providerId) {
+    case 'openai':
+      return runOpenAI(req)
+    case 'anthropic':
+      return runAnthropic(req)
+    case 'google':
+      return runGoogle(req)
+  }
+}
