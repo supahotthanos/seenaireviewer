@@ -21,6 +21,8 @@ const runSchema = z.object({
   // deep: route to deep-research model variants where available; cost can
   // be 10–50× standard so the UI confirms before sending these.
   reasoningMode: z.enum(['standard', 'extended', 'deep']).optional(),
+  // 32-bit signed seed range. OpenAI + Google honor it; Anthropic ignores.
+  seed: z.number().int().min(-2_147_483_648).max(2_147_483_647).optional(),
 })
 
 function getServerKey(providerId: ProviderId): string | null {
@@ -46,7 +48,7 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'Validation failed' }, { status: 400 })
   }
-  const { providerId, modelId, prompt, temperature, searchEnabled, reasoningMode } = parsed.data
+  const { providerId, modelId, prompt, temperature, searchEnabled, reasoningMode, seed } = parsed.data
 
   const provider = PROVIDERS.find((p) => p.id === providerId)
   if (!provider) {
@@ -74,6 +76,7 @@ export async function POST(request: NextRequest) {
       temperature,
       searchEnabled,
       reasoningMode,
+      seed,
     })
     return NextResponse.json(result)
   } catch (err) {

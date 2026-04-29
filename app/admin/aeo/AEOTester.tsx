@@ -95,6 +95,10 @@ interface RunHistory {
   searchEnabled: boolean
   /** Reasoning depth used for this call ('standard' on old entries). */
   reasoningMode?: ReasoningMode
+  /** Seed actually sent (Anthropic = undefined; provider doesn't accept one). */
+  seed?: number
+  /** Provider system fingerprint when returned (currently OpenAI only). */
+  systemFingerprint?: string
   durationMs: number
   citations?: string[]
   /**
@@ -114,6 +118,8 @@ interface BatchResult {
   /** Whether this cell fired with the provider's web-search tool attached. */
   searchEnabled: boolean
   reasoningMode?: ReasoningMode
+  seed?: number
+  systemFingerprint?: string
   status: 'pending' | 'success' | 'error'
   text?: string
   mentions?: number
@@ -134,6 +140,7 @@ const SPEND_KEY = 'seenai_aeo_spend'
 const CAP_KEY = 'seenai_aeo_daily_cap'
 const HISTORY_KEY = 'seenai_aeo_history'
 const SNAPSHOTS_KEY = 'seenai_aeo_snapshots'
+const FINGERPRINTS_KEY = 'seenai_aeo_fingerprints'
 
 const DEFAULT_DAILY_CAP = 5
 
@@ -157,6 +164,38 @@ type DriftAlert = {
   newSnapshot: string
   /** ISO timestamp from the previously stored entry (when old was first seen). */
   prevSeenISO: string
+  /** What KIND of drift this represents — distinguishes the toast wording. */
+  kind: 'snapshot' | 'fingerprint'
+}
+
+/**
+ * Fingerprint store — keyed by `${modelId}:${seed}` so a fingerprint
+ * change is only an alert when it's for the SAME (model, seed) pair (a
+ * change there means deterministic outputs are no longer deterministic).
+ * Different seeds legitimately produce different fingerprints; keying by
+ * the pair avoids spurious noise.
+ */
+type FingerprintStore = Record<
+  string,
+  { fingerprint: string; lastSeenISO: string; modelId: string; seed: number }
+>
+
+function loadFingerprints(): FingerprintStore {
+  try {
+    const raw = localStorage.getItem(FINGERPRINTS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as FingerprintStore
+    if (parsed && typeof parsed === 'object') return parsed
+    return {}
+  } catch {
+    return {}
+  }
+}
+
+function saveFingerprints(s: FingerprintStore) {
+  try {
+    localStorage.setItem(FINGERPRINTS_KEY, JSON.stringify(s))
+  } catch {}
 }
 
 function loadSnapshots(): SnapshotStore {
@@ -175,6 +214,21 @@ function saveSnapshots(s: SnapshotStore) {
   try {
     localStorage.setItem(SNAPSHOTS_KEY, JSON.stringify(s))
   } catch {}
+}
+
+/**
+ * Cheap deterministic 32-bit hash (djb2). Used to derive a per-cell seed
+ * when the operator doesn't supply one — gives reproducibility per
+ * (modelId, paraphraseIndex, trialIndex) without needing manual entry.
+ * Range is clamped to a positive int32 to satisfy provider seed schemas.
+ */
+function hashToSeed(s: string): number {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h) + s.charCodeAt(i)
+    h |= 0
+  }
+  return Math.abs(h) || 1
 }
 
 /** Best-effort relative formatter ("just now", "3h ago", "2d ago"). */
@@ -300,11 +354,20 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
   // Reasoning depth — see ReasoningMode in lib/aeo-providers. 'deep' can
   // 10–50× the bill so we gate the run with a confirmation dialog.
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('standard')
+  // Reproducibility seed input (string so the empty case is clean). When
+  // empty/non-numeric we fall back to a deterministic per-cell hash of
+  // (modelId, paraphraseIndex, trialIndex). Anthropic ignores the seed
+  // either way — there's no documented seed parameter on Messages API.
+  const [seedInput, setSeedInput] = useState<string>('')
   // Drift detection: per-modelId snapshot fingerprint store. When a model's
   // snapshot changes between batches, fire a sticky alert so the operator
   // knows to re-baseline that model's trend data. Empty store = first run
   // ever; we silently seed it instead of alerting.
   const [snapshots, setSnapshots] = useState<SnapshotStore>({})
+  // Fingerprint store — separate from snapshots because the (model, seed)
+  // pairing matters and different seeds expectedly yield different
+  // fingerprints. Drift here means deterministic runs broke.
+  const [fingerprints, setFingerprints] = useState<FingerprintStore>({})
   const [driftAlerts, setDriftAlerts] = useState<DriftAlert[]>([])
 
   // First-load: hydrate from localStorage + check server-side key status
@@ -317,6 +380,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
       if (raw) setHistory((JSON.parse(raw) as RunHistory[]).slice(0, 1000))
     } catch {}
     setSnapshots(loadSnapshots())
+    setFingerprints(loadFingerprints())
 
     fetch('/api/aeo/status')
       .then((r) => r.json())
@@ -431,19 +495,41 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
       prompt: string
       trialIndex: number
       searchEnabled: boolean
+      seed: number
     }
     const searchFlags: boolean[] =
       searchMode === 'on' ? [true]
       : searchMode === 'off' ? [false]
       : [true, false]
+    // Operator-supplied seed overrides everything; otherwise we hash the
+    // cell coordinates so re-running the same batch produces the same
+    // per-cell seeds → reproducible across days. Empty / non-numeric input
+    // falls through to the hash branch silently.
+    const trimmedSeed = seedInput.trim()
+    const explicitSeed = trimmedSeed && !Number.isNaN(Number(trimmedSeed))
+      ? Math.trunc(Number(trimmedSeed))
+      : null
     const cells: Cell[] = []
     for (const { providerId, model } of availableModels) {
+      let paraIdx = 0
       for (const p of prompts) {
         for (let t = 0; t < trials; t++) {
           for (const flag of searchFlags) {
-            cells.push({ providerId, model, prompt: p, trialIndex: t, searchEnabled: flag })
+            const cellSeed =
+              explicitSeed !== null
+                ? explicitSeed
+                : hashToSeed(`${model.id}|${paraIdx}|${t}`)
+            cells.push({
+              providerId,
+              model,
+              prompt: p,
+              trialIndex: t,
+              searchEnabled: flag,
+              seed: cellSeed,
+            })
           }
         }
+        paraIdx++
       }
     }
 
@@ -454,6 +540,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
       trialIndex: c.trialIndex,
       searchEnabled: c.searchEnabled,
       reasoningMode,
+      seed: c.seed,
       status: 'pending',
     }))
     setBatch(initial)
@@ -475,6 +562,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               temperature,
               searchEnabled: c.searchEnabled,
               reasoningMode,
+              seed: c.seed,
             }),
           })
           const r = await res.json()
@@ -504,6 +592,8 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               // Server echoes the EFFECTIVE mode (e.g. 'deep' downgrades
               // to 'extended' on models without a deep variant).
               reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
+              seed: typeof r.seed === 'number' ? r.seed : c.seed,
+              systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
               costUsd: r.costUsd,
               durationMs: r.durationMs,
               citations: r.citations,
@@ -535,6 +625,8 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             rankFormat: rankResult.format,
             searchEnabled: c.searchEnabled,
             reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
+            seed: typeof r.seed === 'number' ? r.seed : c.seed,
+            systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
             durationMs: r.durationMs,
             citations: r.citations,
             citationDomains: citationsToDomains(r.citations),
@@ -562,6 +654,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             mentions: 0,
             searchEnabled: c.searchEnabled,
             reasoningMode,
+            seed: c.seed,
             durationMs: 0,
             error: msg,
           })
@@ -611,6 +704,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             oldSnapshot: prev.snapshot,
             newSnapshot: newSnap,
             prevSeenISO: prev.lastSeenISO,
+            kind: 'snapshot',
           })
           nextStore[modelId] = { snapshot: newSnap, lastSeenISO: nowISO }
         }
@@ -622,6 +716,57 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
       saveSnapshots(nextStore)
       if (newAlerts.length > 0) {
         setDriftAlerts((prev) => [...prev, ...newAlerts])
+      }
+    }
+
+    // ── Fingerprint drift detection ──────────────────────────────
+    // Keyed by `${modelId}:${seed}` because different seeds legitimately
+    // produce different fingerprints. A change for the SAME pair means
+    // deterministic outputs are no longer deterministic.
+    const seenFingerprints = new Map<string, { modelId: string; seed: number; fp: string }>()
+    for (const h of newHistoryEntries) {
+      if (h.error) continue
+      const fp = (h.systemFingerprint || '').trim()
+      if (!fp || typeof h.seed !== 'number') continue
+      const key = `${h.modelId}:${h.seed}`
+      if (!seenFingerprints.has(key)) {
+        seenFingerprints.set(key, { modelId: h.modelId, seed: h.seed, fp })
+      }
+    }
+    if (seenFingerprints.size > 0) {
+      const nextFpStore: FingerprintStore = { ...fingerprints }
+      const fpAlerts: DriftAlert[] = []
+      const nowISO = new Date().toISOString()
+      for (const [key, val] of Array.from(seenFingerprints.entries())) {
+        const prev = nextFpStore[key]
+        if (!prev) {
+          nextFpStore[key] = {
+            fingerprint: val.fp,
+            lastSeenISO: nowISO,
+            modelId: val.modelId,
+            seed: val.seed,
+          }
+        } else if (prev.fingerprint !== val.fp) {
+          fpAlerts.push({
+            id: crypto.randomUUID(),
+            modelId: `${val.modelId} (seed ${val.seed})`,
+            oldSnapshot: prev.fingerprint,
+            newSnapshot: val.fp,
+            prevSeenISO: prev.lastSeenISO,
+            kind: 'fingerprint',
+          })
+          nextFpStore[key] = {
+            fingerprint: val.fp,
+            lastSeenISO: nowISO,
+            modelId: val.modelId,
+            seed: val.seed,
+          }
+        }
+      }
+      setFingerprints(nextFpStore)
+      saveFingerprints(nextFpStore)
+      if (fpAlerts.length > 0) {
+        setDriftAlerts((prev) => [...prev, ...fpAlerts])
       }
     }
 
@@ -985,6 +1130,38 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
                   ⚠️ Deep research multiplies cost. Estimate above already includes the multiplier.
                 </p>
               )}
+
+              <div className="mt-4 pt-4 border-t border-white/5">
+                <label className="text-sm text-[color:var(--text-muted)] font-sans">
+                  Reproducibility seed
+                  <span className="text-white/40 text-xs ml-2 font-sans">
+                    (optional — empty uses a deterministic per-cell hash)
+                  </span>
+                </label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <GlassInput
+                    type="number"
+                    placeholder="e.g. 42"
+                    value={seedInput}
+                    onChange={(e) => setSeedInput(e.target.value.slice(0, 12))}
+                    inputMode="numeric"
+                  />
+                  {seedInput && (
+                    <button
+                      type="button"
+                      onClick={() => setSeedInput('')}
+                      className="text-xs text-white/60 hover:text-[#b4caff] font-sans px-3 py-2 rounded-lg border border-white/10 hover:border-[#b4caff]/40 transition-colors"
+                    >
+                      clear
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-white/60 font-sans mt-1">
+                  Forwarded to OpenAI + Google. Anthropic doesn&apos;t expose a seed param —
+                  identical re-runs there can still vary. Fingerprint drift on the same (model, seed)
+                  pair will trigger a separate alert.
+                </p>
+              </div>
             </div>
           </details>
 
@@ -1145,7 +1322,11 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
           type="warning"
           sticky
           offsetBottom={24 + (toast ? 70 : 0) + i * 70}
-          message={`⚠️ Model drift detected: ${a.modelId} changed from "${a.oldSnapshot}" to "${a.newSnapshot}" since ${formatRelative(a.prevSeenISO)}.`}
+          message={
+            a.kind === 'fingerprint'
+              ? `⚠️ Fingerprint drift: ${a.modelId} now "${a.newSnapshot}" (was "${a.oldSnapshot}" — ${formatRelative(a.prevSeenISO)}). Seeded outputs are no longer deterministic.`
+              : `⚠️ Model drift detected: ${a.modelId} changed from "${a.oldSnapshot}" to "${a.newSnapshot}" since ${formatRelative(a.prevSeenISO)}.`
+          }
           onDismiss={() =>
             setDriftAlerts((prev) => prev.filter((x) => x.id !== a.id))
           }

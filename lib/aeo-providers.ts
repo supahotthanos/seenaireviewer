@@ -298,6 +298,15 @@ export interface RunRequest {
    * 'deep' is cost-inflating — callers should confirm with the user first.
    */
   reasoningMode?: ReasoningMode
+  /**
+   * Reproducibility seed. Forwarded to OpenAI (Responses + chat completions)
+   * and Google (generationConfig) so identical inputs return identical
+   * outputs WHEN the upstream model is in deterministic mode. Anthropic
+   * does NOT expose a seed parameter, so this is silently ignored there.
+   * The system_fingerprint that providers return alongside seeded calls is
+   * surfaced via RunResult.systemFingerprint for drift detection.
+   */
+  seed?: number
 }
 
 export interface RunResult {
@@ -319,6 +328,15 @@ export interface RunResult {
   // from the request when 'deep' falls back to 'extended' on a model
   // without a deep-research variant.
   reasoningMode: ReasoningMode
+  // Seed actually sent to the provider (or undefined for providers that
+  // don't expose one — e.g. Anthropic).
+  seed?: number
+  // Provider's per-call fingerprint of the underlying model snapshot.
+  // For OpenAI this is `system_fingerprint`; Gemini does NOT return a
+  // dedicated fingerprint with seeded calls so we leave it undefined.
+  // When this changes for the SAME (model, seed) pair, the upstream model
+  // weights have shifted and previously-reproducible runs no longer are.
+  systemFingerprint?: string
 }
 
 // Common fetch options for every browser → provider API call.
@@ -380,6 +398,7 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       effectiveReasoning === 'deep' ? 6 : effectiveReasoning === 'extended' ? 2 : 1
     body.max_output_tokens = baseBudget * reasoningMultiplier
     if (!isLockedTemp) body.temperature = req.temperature ?? 1
+    if (typeof req.seed === 'number') body.seed = req.seed
 
     const res = await fetch('https://api.openai.com/v1/responses', {
       ...ISOLATED_FETCH,
@@ -426,6 +445,9 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       modelSnapshot: typeof data.model === 'string' ? data.model : undefined,
       searchEnabled: searchOn,
       reasoningMode: effectiveReasoning,
+      seed: typeof req.seed === 'number' ? req.seed : undefined,
+      systemFingerprint:
+        typeof data.system_fingerprint === 'string' ? data.system_fingerprint : undefined,
     }
   }
 
@@ -436,6 +458,7 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
     max_tokens: 1500,
     temperature: req.temperature ?? 1,
   }
+  if (typeof req.seed === 'number') body.seed = req.seed
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     ...ISOLATED_FETCH,
     method: 'POST',
@@ -469,6 +492,9 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
     // Legacy chat completions has no reasoning knob; always 'standard'
     // regardless of what the caller requested.
     reasoningMode: 'standard',
+    seed: typeof req.seed === 'number' ? req.seed : undefined,
+    systemFingerprint:
+      typeof data.system_fingerprint === 'string' ? data.system_fingerprint : undefined,
   }
 }
 
@@ -553,6 +579,11 @@ async function runAnthropic(req: RunRequest): Promise<RunResult> {
     // Echo what we actually applied — falls back to 'standard' on models
     // that don't support thinking even if 'extended' was requested.
     reasoningMode: wantsThinking ? reasoning : 'standard',
+    // Anthropic Messages API does NOT expose a seed parameter (no
+    // documented knob as of 2026-04). We deliberately omit seed/fingerprint
+    // here so callers see undefined and can act accordingly.
+    seed: undefined,
+    systemFingerprint: undefined,
   }
 }
 
@@ -575,6 +606,7 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
   if (wantsThinking) {
     generationConfig.thinkingConfig = { thinkingBudget }
   }
+  if (typeof req.seed === 'number') generationConfig.seed = req.seed
   const body: Record<string, unknown> = {
     contents: [{ parts: [{ text: req.prompt }], role: 'user' }],
     generationConfig,
@@ -624,6 +656,10 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
     // 'standard' if the model didn't support a thinking budget at all,
     // otherwise echo what we asked for.
     reasoningMode: wantsThinking ? reasoning : 'standard',
+    seed: typeof req.seed === 'number' ? req.seed : undefined,
+    // Gemini does not return a stable per-call fingerprint for seeded
+    // generations; modelVersion already covers the snapshot side.
+    systemFingerprint: undefined,
   }
 }
 
