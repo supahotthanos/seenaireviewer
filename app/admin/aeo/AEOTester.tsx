@@ -101,6 +101,8 @@ interface RunHistory {
   systemFingerprint?: string
   /** YYYY-MM-DD date injected into the system instruction. */
   injectedDate?: string
+  /** Gemini finishReason (STOP / MAX_TOKENS / SAFETY / RECITATION / OTHER). */
+  finishReason?: string
   durationMs: number
   citations?: string[]
   /**
@@ -123,6 +125,7 @@ interface BatchResult {
   seed?: number
   systemFingerprint?: string
   injectedDate?: string
+  finishReason?: string
   status: 'pending' | 'success' | 'error'
   text?: string
   mentions?: number
@@ -609,6 +612,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               seed: typeof r.seed === 'number' ? r.seed : c.seed,
               systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
               injectedDate: typeof r.injectedDate === 'string' ? r.injectedDate : effectiveDate,
+              finishReason: typeof r.finishReason === 'string' ? r.finishReason : undefined,
               costUsd: r.costUsd,
               durationMs: r.durationMs,
               citations: r.citations,
@@ -643,6 +647,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             seed: typeof r.seed === 'number' ? r.seed : c.seed,
             systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
             injectedDate: typeof r.injectedDate === 'string' ? r.injectedDate : effectiveDate,
+            finishReason: typeof r.finishReason === 'string' ? r.finishReason : undefined,
             durationMs: r.durationMs,
             citations: r.citations,
             citationDomains: citationsToDomains(r.citations),
@@ -1576,6 +1581,18 @@ function BatchPanel({
                               }`}
                             >
                               {c.reasoningMode === 'deep' ? '🧠 deep' : '🧠 ext'}
+                            </span>
+                          )}
+                          {c.finishReason && c.finishReason !== 'STOP' && (
+                            <span
+                              title={`finishReason: ${c.finishReason}`}
+                              className={`shrink-0 px-1.5 py-0.5 rounded font-mono text-[10px] uppercase tracking-widest border ${
+                                c.finishReason === 'SAFETY'
+                                  ? 'bg-red-500/20 text-red-200 border-red-500/50'
+                                  : 'bg-amber-300/15 text-amber-200 border-amber-300/30'
+                              }`}
+                            >
+                              {c.finishReason === 'SAFETY' ? '🛡️ filtered' : `! ${c.finishReason.toLowerCase()}`}
                             </span>
                           )}
                           <span className="truncate">Trial {c.trialIndex + 1} · {c.prompt}</span>

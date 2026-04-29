@@ -348,6 +348,13 @@ export interface RunResult {
   // Echo of the date string injected into the system instruction (or
   // undefined when the caller passed nothing).
   injectedDate?: string
+  /**
+   * Provider's finish reason. Currently only populated by Gemini
+   * (STOP / MAX_TOKENS / SAFETY / RECITATION / OTHER) — useful for
+   * surfacing safety-filtered responses without inspecting raw bodies.
+   * Other providers leave this undefined.
+   */
+  finishReason?: string
 }
 
 /**
@@ -647,6 +654,21 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
   if (sysGoogle) {
     body.systemInstruction = { parts: [{ text: sysGoogle }] }
   }
+  // Explicit safety settings: BLOCK_ONLY_HIGH on the four categories that
+  // matter for a med-spa AEO benchmark. Default Gemini thresholds are
+  // BLOCK_MEDIUM_AND_ABOVE, which is over-aggressive for legitimate
+  // medical/aesthetic content (Botox dosing, laser treatments, post-op
+  // care all routinely trip MEDIUM filters even when the request is
+  // benign). BLOCK_ONLY_HIGH still blocks genuinely harmful output but
+  // lets operators see the realistic answers customers would actually
+  // get from Gemini-grounded surfaces. We log finishReason so SAFETY
+  // suppression is still visible in the UI when it does fire.
+  body.safetySettings = [
+    { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+    { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+    { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+    { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+  ]
   // Gemini grounding tool is only attached when both the model supports it
   // AND search is requested for this run. Skipping it makes Gemini answer
   // from its training data only — same intent as the OpenAI/Anthropic
@@ -697,6 +719,9 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
     // generations; modelVersion already covers the snapshot side.
     systemFingerprint: undefined,
     injectedDate: req.injectedDate,
+    // Gemini's finishReason — STOP / MAX_TOKENS / SAFETY / RECITATION /
+    // OTHER. Only meaningful when present; leave undefined otherwise.
+    finishReason: typeof cand?.finishReason === 'string' ? cand.finishReason : undefined,
   }
 }
 
