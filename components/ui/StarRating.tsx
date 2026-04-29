@@ -45,7 +45,7 @@ export function StarRating({ value, onChange, size = 'md', readonly = false }: S
             className={`
               select-none
               transition-colors duration-150
-              ${star <= activeRating ? 'text-[#c9a87c] drop-shadow-[0_0_6px_rgba(201,168,124,0.6)]' : 'text-white/20'}
+              ${star <= activeRating ? 'text-[#c9a87c] drop-shadow-[0_0_6px_rgba(201,168,124,0.6)]' : 'text-[color:var(--text-subtle)] opacity-50'}
             `}
           >
             ★

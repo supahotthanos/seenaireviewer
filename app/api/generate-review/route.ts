@@ -149,19 +149,47 @@ export async function POST(request: NextRequest) {
       .select('id')
       .single()
 
-    if (insertError) {
-      console.error('[generate-review] Insert error:', insertError.message)
+    if (insertError || !reviewRow) {
+      // We already paid for the Anthropic call; the review text exists but
+      // has no DB record. Return an error so the client shows a retry instead
+      // of silently claiming success with a null review_id (which would break
+      // copy-tracking and analytics).
+      console.error('[generate-review] Insert error:', insertError?.message)
+      return NextResponse.json(
+        { error: 'Could not save your review. Please try again.' },
+        { status: 500 }
+      )
     }
 
     return NextResponse.json({
       generated_review: generatedReview,
-      review_id: reviewRow?.id ?? null,
+      review_id: reviewRow.id,
     })
   } catch (error) {
-    console.error(
-      '[generate-review] Unhandled error:',
-      error instanceof Error ? error.message : 'unknown'
-    )
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    const raw = error instanceof Error ? error.message : 'unknown'
+    console.error('[generate-review] Unhandled error:', raw)
+
+    // Map common upstream failures to user-friendly messages. Never leak
+    // provider-specific error text to the customer.
+    const lc = raw.toLowerCase()
+    if (lc.includes('credit balance') || lc.includes('billing')) {
+      return NextResponse.json(
+        { error: 'Review service is temporarily unavailable. Please try again later.' },
+        { status: 503 }
+      )
+    }
+    if (lc.includes('rate_limit') || lc.includes('429')) {
+      return NextResponse.json(
+        { error: 'High demand right now — please try again in a moment.' },
+        { status: 429 }
+      )
+    }
+    if (lc.includes('invalid api key') || lc.includes('authentication_error')) {
+      return NextResponse.json(
+        { error: 'Review service is temporarily unavailable. Please try again later.' },
+        { status: 503 }
+      )
+    }
+    return NextResponse.json({ error: 'Something went wrong. Please try again.' }, { status: 500 })
   }
 }

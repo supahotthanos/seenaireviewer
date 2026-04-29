@@ -16,11 +16,11 @@ export function GlassCard({ children, className = '', padding = 'md' }: GlassCar
   return (
     <div
       className={`
-        bg-white/5
+        bg-[color:var(--surface)]
         backdrop-blur-xl
-        border border-white/10
+        border border-[color:var(--border)]
         rounded-2xl
-        shadow-xl shadow-black/20
+        shadow-xl shadow-[color:var(--shadow)]
         ${paddingMap[padding]}
         ${className}
       `}

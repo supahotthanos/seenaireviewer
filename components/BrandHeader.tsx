@@ -71,7 +71,7 @@ export function BrandHeader({ client, showAddress = true, size = 'md' }: BrandHe
         )}
       </div>
       {showAddress && client.location_address && (
-        <p className="text-white/40 text-sm font-sans">{client.location_address}</p>
+        <p className="text-[color:var(--text-muted)] text-sm font-sans">{client.location_address}</p>
       )}
     </div>
   )

@@ -41,32 +41,46 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Client not found' }, { status: 404 })
   }
 
-  // Generate unique short code
   const slugPrefix = client.slug.replace('lovmedspa-', 'lms-').slice(0, 8)
-  const shortCode = generateShortCode(slugPrefix)
   const appUrl = client.custom_domain
     ? `https://${client.custom_domain}`
     : process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
-  const qrUrl = `${appUrl}/q/${shortCode}`
 
-  // Generate QR code as data URL (so the admin page can display + download)
+  // Insert the tracking row FIRST, with retry on unique-constraint collision.
+  // Generating the QR image before insert risks an orphaned QR (image returned
+  // to admin, no DB row, scans fail). Insert-first guarantees the DB row
+  // exists whenever the admin sees a short_code.
+  let shortCode = ''
+  let attempt = 0
+  while (attempt < 5) {
+    shortCode = generateShortCode(slugPrefix)
+    const { error: insertError } = await supabaseServer.from('qr_codes').insert({
+      client_id,
+      short_code: shortCode,
+      label: (label || 'New QR Code').slice(0, 100),
+    })
+    if (!insertError) break
+    if (insertError.code !== '23505') {
+      console.error('[qr-generate] Insert error:', insertError.message)
+      return NextResponse.json({ error: 'Failed to save QR code' }, { status: 500 })
+    }
+    attempt++
+  }
+  if (attempt === 5) {
+    return NextResponse.json(
+      { error: 'Could not generate a unique short code. Please try again.' },
+      { status: 503 }
+    )
+  }
+
+  // Safe to render the QR image now — the row exists.
+  const qrUrl = `${appUrl}/q/${shortCode}`
   const qrDataUrl = await QRCode.toDataURL(qrUrl, {
     width: 1024,
     margin: 2,
     color: { dark: '#0a0a0f', light: '#ffffff' },
     errorCorrectionLevel: 'H',
   })
-
-  // Insert tracking row
-  const { error: insertError } = await supabaseServer.from('qr_codes').insert({
-    client_id,
-    short_code: shortCode,
-    label: (label || 'New QR Code').slice(0, 100),
-  })
-
-  if (insertError) {
-    return NextResponse.json({ error: insertError.message }, { status: 500 })
-  }
 
   return NextResponse.json({
     short_code: shortCode,
@@ -96,7 +110,8 @@ export async function GET(request: NextRequest) {
   const { data: qrCodes, error } = await query
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[qr-generate] GET error:', error.message)
+    return NextResponse.json({ error: 'Failed to list QR codes' }, { status: 500 })
   }
 
   return NextResponse.json({ qr_codes: qrCodes })

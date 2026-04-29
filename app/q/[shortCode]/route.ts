@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabaseServer } from '@/lib/supabase-server'
 
+// Edge runtime — cold starts in ~50ms vs ~800ms on Node. The customer's
+// first scan of a QR hits this route; every ms of latency here is visible
+// as a blank screen on iOS Safari between the camera app and the funnel.
+export const runtime = 'edge'
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: { shortCode: string } }

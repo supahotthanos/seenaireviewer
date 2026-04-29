@@ -72,6 +72,12 @@ export const createClientSchema = z.object({
   location_address: z.string().max(300).optional(),
   location_city: z.string().min(2).max(100),
   google_place_id: z.string().min(3).max(200),
+  google_review_url: z
+    .string()
+    .url('Must be a valid URL')
+    .max(500)
+    .optional()
+    .or(z.literal('')),
   notification_email: z
     .string()
     .min(5)
@@ -113,7 +119,12 @@ export const createClientSchema = z.object({
     .array(z.string().min(1).max(100))
     .min(1, 'At least one team member required')
     .max(100),
-  daily_ai_limit: z.number().int().min(1).max(1000).optional().default(50),
+  aliases: z
+    .array(z.string().min(1).max(100))
+    .max(20)
+    .optional()
+    .default([]),
+  daily_ai_limit: z.number().int().min(1).max(1000).optional().default(150),
   is_active: z.boolean().optional().default(true),
 })
 

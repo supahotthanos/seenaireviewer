@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 const PLACEHOLDER = 'change-me-to-a-long-random-string-32chars-min'
-const MIN_SECRET_LENGTH = 24
+const MIN_SECRET_LENGTH = 8
 
 // Constant-time compare that runs on the Edge runtime (no Node crypto).
 function safeEqual(a: string, b: string): boolean {
@@ -16,19 +16,23 @@ function safeEqual(a: string, b: string): boolean {
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
 
-  // Gate /admin pages at the edge. API routes under /api/admin enforce their
-  // own check via verifyAdminSecret — this just stops the page shell from
-  // rendering to unauthenticated browsers.
+  // Gate /admin pages at the edge via an HttpOnly session cookie. The
+  // login page itself (/admin/login) stays public — it's how operators
+  // first exchange the secret for a cookie.
   if (pathname === '/admin' || pathname.startsWith('/admin/')) {
-    const expected = process.env.ADMIN_SECRET
-    const valid =
-      expected &&
-      expected !== PLACEHOLDER &&
-      expected.length >= MIN_SECRET_LENGTH
-    const provided = request.nextUrl.searchParams.get('key')
+    if (pathname !== '/admin/login') {
+      const expected = process.env.ADMIN_SECRET
+      const valid =
+        expected &&
+        expected !== PLACEHOLDER &&
+        expected.length >= MIN_SECRET_LENGTH
+      const sessionCookie = request.cookies.get('seenai_admin_session')?.value
 
-    if (!valid || !provided || !safeEqual(provided, expected!)) {
-      return new NextResponse('Not found', { status: 404 })
+      if (!valid || !sessionCookie || !safeEqual(sessionCookie, expected!)) {
+        // Redirect to login (also strips any legacy `?key=` from the URL).
+        const loginUrl = new URL('/admin/login', request.url)
+        return NextResponse.redirect(loginUrl)
+      }
     }
   }
 

@@ -16,7 +16,7 @@ export function StepIndicator({ steps, current }: StepIndicatorProps) {
             key={i}
             className={`
               rounded-full transition-all duration-300
-              ${isActive ? 'w-6 h-2 bg-[#c9a87c]' : isCompleted ? 'w-2 h-2 bg-[#c9a87c]/60' : 'w-2 h-2 bg-white/15'}
+              ${isActive ? 'w-6 h-2 bg-[#c9a87c]' : isCompleted ? 'w-2 h-2 bg-[#c9a87c]/60' : 'w-2 h-2 bg-[color:var(--border-strong)]'}
             `}
           />
         )

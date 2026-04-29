@@ -19,8 +19,10 @@ CREATE TABLE IF NOT EXISTS clients (
   location_address TEXT,
   location_city TEXT NOT NULL,
   google_place_id TEXT NOT NULL,
+  google_review_url TEXT,
   custom_domain TEXT UNIQUE,
   logo_url TEXT,
+  aliases TEXT[] DEFAULT '{}',
   brand_color_primary TEXT DEFAULT '#c9a87c',
   brand_color_secondary TEXT DEFAULT '#a01b1b',
   services JSONB NOT NULL DEFAULT '[]',
@@ -29,18 +31,29 @@ CREATE TABLE IF NOT EXISTS clients (
   notification_phone TEXT,
   is_active BOOLEAN DEFAULT true,
   monthly_review_limit INTEGER DEFAULT 1000,
-  daily_ai_limit INTEGER DEFAULT 50,
+  daily_ai_limit INTEGER DEFAULT 150,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Add columns for installs that pre-date them (idempotent)
 ALTER TABLE clients
-  ADD COLUMN IF NOT EXISTS daily_ai_limit INTEGER DEFAULT 50,
+  ADD COLUMN IF NOT EXISTS daily_ai_limit INTEGER DEFAULT 150,
   ADD COLUMN IF NOT EXISTS logo_url TEXT,
   ADD COLUMN IF NOT EXISTS custom_domain TEXT UNIQUE,
   ADD COLUMN IF NOT EXISTS brand_color_primary TEXT DEFAULT '#c9a87c',
-  ADD COLUMN IF NOT EXISTS brand_color_secondary TEXT DEFAULT '#a01b1b';
+  ADD COLUMN IF NOT EXISTS brand_color_secondary TEXT DEFAULT '#a01b1b',
+  -- Optional override: per-location Google Business Profile short review URL
+  -- (e.g. https://g.page/r/XXXXXX/review). When set, ReviewFunnel uses this
+  -- directly on "Post to Google" — reliably opens the review form on mobile,
+  -- whereas the raw writereview?placeid= URL is sometimes intercepted by the
+  -- Google Maps app and lands on the profile instead.
+  ADD COLUMN IF NOT EXISTS google_review_url TEXT,
+  -- Optional alias list for AEO mention detection. When empty, the AEO
+  -- tester auto-derives sensible variants from business_name (CamelCase
+  -- splits, possessive, plural). Set custom spellings here to catch how
+  -- LLMs actually write the name (e.g. "Lov MedSpa", "LMS Brooklyn").
+  ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
 
 -- ============================================================
 -- REVIEWS
@@ -68,6 +81,13 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE INDEX IF NOT EXISTS reviews_client_id_idx ON reviews(client_id);
 CREATE INDEX IF NOT EXISTS reviews_created_at_idx ON reviews(created_at DESC);
 CREATE INDEX IF NOT EXISTS reviews_review_type_idx ON reviews(review_type);
+-- Composite indexes for the hot rate-limit queries (called on every AI
+-- review generation). Without these, the global monthly + per-client daily
+-- counts degrade to full-table scans at ~100k+ reviews.
+CREATE INDEX IF NOT EXISTS reviews_type_created_idx
+  ON reviews(review_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS reviews_client_type_created_idx
+  ON reviews(client_id, review_type, created_at DESC);
 
 -- ============================================================
 -- QR CODES

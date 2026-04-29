@@ -1,7 +1,7 @@
 import { ButtonHTMLAttributes, ReactNode } from 'react'
 
 interface GlassButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger'
+  variant?: 'primary' | 'secondary' | 'danger' | 'admin'
   loading?: boolean
   children: ReactNode
   fullWidth?: boolean
@@ -16,15 +16,23 @@ const variantMap = {
     hover:shadow-[#c9a87c]/40
   `,
   secondary: `
-    bg-white/5 hover:bg-white/10
-    text-white
-    border border-white/15 hover:border-white/25
+    bg-[color:var(--surface)] hover:bg-[color:var(--surface-hover)]
+    text-[color:var(--text)]
+    border border-[color:var(--border)] hover:border-[color:var(--border-strong)]
   `,
   danger: `
     bg-[#a01b1b] hover:bg-[#c02020]
     text-white
     border border-[#a01b1b]/50
     shadow-lg shadow-[#a01b1b]/20
+  `,
+  // Glass-periwinkle variant used by the admin dashboard.
+  admin: `
+    bg-[#b4caff]/20 hover:bg-[#b4caff]/30
+    text-white
+    border border-[#b4caff]/60 hover:border-[#b4caff]/80
+    shadow-lg shadow-[#b4caff]/20 hover:shadow-[#b4caff]/40
+    backdrop-blur-sm
   `,
 }
 

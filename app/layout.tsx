@@ -1,6 +1,14 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Cormorant_Garamond, DM_Sans } from 'next/font/google'
 import './globals.css'
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: 'cover',
+  themeColor: '#0a0a0f',
+}
 
 const cormorant = Cormorant_Garamond({
   subsets: ['latin'],
@@ -32,7 +40,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={`${cormorant.variable} ${dmSans.variable}`}>
-      <body className="bg-[#0a0a0f] min-h-screen">
+      <body className="min-h-screen">
         {/* Ambient background orbs */}
         <div className="orb-container" aria-hidden="true">
           <div className="orb orb-gold" />

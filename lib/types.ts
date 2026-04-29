@@ -7,12 +7,14 @@ export interface Client {
   location_address: string | null
   location_city: string
   google_place_id: string
+  google_review_url: string | null
   custom_domain: string | null
   logo_url: string | null
   brand_color_primary: string
   brand_color_secondary: string
   services: string[]
   team_members: string[]
+  aliases: string[]
   notification_email: string
   notification_phone: string | null
   is_active: boolean

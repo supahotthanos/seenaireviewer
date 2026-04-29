@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useState, useCallback } from 'react'
-import { useSearchParams } from 'next/navigation'
 import { GlassCard } from '@/components/ui/GlassCard'
 import { GlassButton } from '@/components/ui/GlassButton'
 import { GlassInput } from '@/components/ui/GlassInput'
@@ -24,7 +23,13 @@ interface ClientWithStats {
   daily_ai_limit: number | null
   is_active: boolean
   created_at: string
-  stats: { positive: number; negative: number; total: number }
+  stats: {
+    positive: number
+    negative: number
+    total: number
+    copied: number
+    sent_to_google: number
+  }
 }
 
 interface QRCodeRow {
@@ -56,9 +61,6 @@ interface ReviewRow {
 }
 
 export default function AdminDashboard() {
-  const searchParams = useSearchParams()
-  const key = searchParams.get('key') || ''
-
   const [clients, setClients] = useState<ClientWithStats[]>([])
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null)
   const [qrCodes, setQrCodes] = useState<QRCodeRow[]>([])
@@ -91,15 +93,16 @@ export default function AdminDashboard() {
     }
   }
 
-  // Reusable client fetch
+  // Reusable client fetch. Cookie flows automatically with same-origin fetch,
+  // so no key param needed. If the cookie is invalid/expired, the middleware
+  // will have already redirected — but we defensively handle 401 here too.
   const refreshClients = useCallback(
     (selectSlug?: string) => {
-      if (!key) return Promise.resolve()
-      return fetch(`/api/admin/clients?key=${encodeURIComponent(key)}`)
+      return fetch('/api/admin/clients')
         .then(async (r) => {
           if (r.status === 401) {
             setAuthError(true)
-            throw new Error('Invalid admin key')
+            throw new Error('Session expired')
           }
           return r.json()
         })
@@ -115,31 +118,26 @@ export default function AdminDashboard() {
         })
         .catch(() => {})
     },
-    [key, selectedClientId]
+    [selectedClientId]
   )
 
   useEffect(() => {
-    if (!key) {
-      setLoading(false)
-      setAuthError(true)
-      return
-    }
     refreshClients().finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key])
+  }, [])
 
   // Fetch QR codes + reviews when client changes
   const fetchClientData = useCallback(
     (clientId: string) => {
       Promise.all([
-        fetch(`/api/admin/qr-generate?key=${encodeURIComponent(key)}&client_id=${clientId}`).then((r) => r.json()),
-        fetch(`/api/admin/reviews?key=${encodeURIComponent(key)}&client_id=${clientId}&limit=50`).then((r) => r.json()),
+        fetch(`/api/admin/qr-generate?client_id=${clientId}`).then((r) => r.json()),
+        fetch(`/api/admin/reviews?client_id=${clientId}&limit=200`).then((r) => r.json()),
       ]).then(([qrData, reviewData]) => {
         setQrCodes(qrData.qr_codes || [])
         setReviews(reviewData.reviews || [])
       })
     },
-    [key]
+    []
   )
 
   useEffect(() => {
@@ -156,7 +154,7 @@ export default function AdminDashboard() {
 
     setGeneratingQR(true)
     try {
-      const response = await fetch(`/api/admin/qr-generate?key=${encodeURIComponent(key)}`, {
+      const response = await fetch('/api/admin/qr-generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: selectedClientId, label: qrLabel.trim() }),
@@ -205,18 +203,28 @@ export default function AdminDashboard() {
     return (
       <div className="max-w-md mx-auto mt-20">
         <GlassCard className="text-center">
-          <h1 className="font-serif text-2xl text-white mb-2 font-light">
-            Admin Access Required
+          <h1 className="font-serif text-2xl text-[#b4caff] mb-2 font-light">
+            Session expired
           </h1>
-          <p className="text-white/50 text-sm font-sans mb-4">
-            Add <code className="bg-white/10 px-2 py-0.5 rounded text-[#c9a87c]">?key=YOUR_ADMIN_SECRET</code> to the URL.
+          <p className="text-white/80 text-sm font-sans mb-4">
+            Please sign in again.
           </p>
-          <p className="text-white/30 text-xs font-sans">
-            The secret is set as <code className="bg-white/5 px-1 rounded">ADMIN_SECRET</code> in your environment variables.
-          </p>
+          <GlassButton
+            variant="admin"
+            onClick={() => {
+              window.location.href = '/admin/login'
+            }}
+          >
+            Go to sign in
+          </GlassButton>
         </GlassCard>
       </div>
     )
+  }
+
+  const handleLogout = async () => {
+    await fetch('/api/admin/logout', { method: 'POST' })
+    window.location.href = '/admin/login'
   }
 
   const selectedClient = clients.find((c) => c.id === selectedClientId)
@@ -227,30 +235,44 @@ export default function AdminDashboard() {
       <header className="mb-8">
         <div className="flex items-start justify-between flex-wrap gap-4">
           <div>
-            <h1 className="font-serif text-3xl text-white font-light mb-1">
-              <span className="text-[#a01b1b]">Seen</span>
-              <span className="text-[#c9a87c]">AI</span>
-              <span className="text-white/60 ml-3 text-2xl">Reviews Admin</span>
+            <h1 className="font-serif text-3xl font-light mb-1">
+              <span className="text-[#b4caff]">Seen</span>
+              <span className="text-[#b4caff]">AI</span>
+              <span className="text-[#b4caff]/80 ml-3 text-2xl">Reviews Admin</span>
             </h1>
-            <p className="text-white/40 text-sm font-sans">
+            <p className="text-white/70 text-sm font-sans">
               Manage clients, QR codes, and view reviews
             </p>
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <div className="text-white/30 text-xs font-sans">Total clients</div>
-              <div className="text-[#c9a87c] text-2xl font-serif">{clients.length}</div>
+              <div className="text-white/60 text-xs font-sans">Total clients</div>
+              <div className="text-[#b4caff] text-2xl font-serif">{clients.length}</div>
             </div>
-            <GlassButton onClick={() => setFormState({ mode: 'create', seed: null })}>
+            <GlassButton variant="admin" onClick={() => setFormState({ mode: 'create', seed: null })}>
               + New Location
             </GlassButton>
+            <a
+              href="/admin/aeo"
+              className="text-white/70 hover:text-[#b4caff] text-sm font-sans transition-colors px-3 py-2"
+              title="Test if your clients rank in AI answers"
+            >
+              AEO Test
+            </a>
+            <button
+              onClick={handleLogout}
+              className="text-white/70 hover:text-[#b4caff] text-sm font-sans transition-colors px-3 py-2"
+              title="Sign out"
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>
 
       {/* Locations grid */}
       <section className="mb-8">
-        <h2 className="font-serif text-xl text-white/80 mb-4 font-light">Locations</h2>
+        <h2 className="font-serif text-xl text-[#b4caff] mb-4 font-light">Locations</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {clients.map((c) => {
             const isSelected = c.id === selectedClientId
@@ -260,7 +282,7 @@ export default function AdminDashboard() {
                 className={`
                   relative text-left p-5 rounded-xl border transition-all
                   ${isSelected
-                    ? 'bg-[#c9a87c]/10 border-[#c9a87c]/40 shadow-lg shadow-[#c9a87c]/10'
+                    ? 'bg-[#b4caff]/10 border-[#b4caff]/40 shadow-lg shadow-[#b4caff]/10'
                     : 'bg-white/5 border-white/10 hover:bg-white/8 hover:border-white/20'}
                 `}
               >
@@ -273,15 +295,15 @@ export default function AdminDashboard() {
                       {c.business_name}
                     </div>
                     {!c.is_active && (
-                      <span className="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded shrink-0">inactive</span>
+                      <span className="text-xs bg-white/10 text-white/60 border border-white/10 px-2 py-0.5 rounded shrink-0">inactive</span>
                     )}
                   </div>
-                  <div className="text-white/50 text-sm font-sans mb-3">{c.location_city}</div>
+                  <div className="text-white/70 text-sm font-sans mb-3">{c.location_city}</div>
                   <div className="flex gap-3 text-xs font-sans">
-                    <span className="text-[#c9a87c]">★ {c.stats.positive} positive</span>
-                    <span className="text-red-400">⚠ {c.stats.negative} negative</span>
+                    <span className="text-[#b4caff]">★ {c.stats.positive} positive</span>
+                    <span className="text-[#b4caff]/70">⚠ {c.stats.negative} negative</span>
                   </div>
-                  <div className="mt-3 text-white/30 text-xs font-mono truncate">/{c.slug}</div>
+                  <div className="mt-3 text-[#b4caff]/60 text-xs font-mono truncate">/{c.slug}</div>
                 </button>
 
                 {/* Clone — opens New Location form pre-filled with brand fields */}
@@ -291,7 +313,7 @@ export default function AdminDashboard() {
                     setFormState({ mode: 'clone', seed: toSeed(c) })
                   }}
                   title="Clone brand to a new location"
-                  className="absolute top-3 right-3 text-white/30 hover:text-[#c9a87c] text-xs font-sans px-2 py-1 rounded-md border border-white/10 hover:border-[#c9a87c]/40 bg-black/20 transition-colors"
+                  className="absolute top-3 right-3 text-[#b4caff]/80 hover:text-[#b4caff] text-xs font-sans px-2 py-1 rounded-md border border-[#b4caff]/30 hover:border-[#b4caff]/60 bg-black/20 transition-colors"
                 >
                   + Clone
                 </button>
@@ -305,7 +327,7 @@ export default function AdminDashboard() {
             <p className="text-white/60 text-base font-sans mb-4">
               No clients yet. Add your first location to get started.
             </p>
-            <GlassButton onClick={() => setFormState({ mode: 'create', seed: null })}>
+            <GlassButton variant="admin" onClick={() => setFormState({ mode: 'create', seed: null })}>
               + Add First Location
             </GlassButton>
           </GlassCard>
@@ -318,23 +340,23 @@ export default function AdminDashboard() {
           <GlassCard>
             <div className="flex items-start justify-between mb-4 gap-3 flex-wrap">
               <div>
-                <h2 className="font-serif text-2xl text-white font-light">
+                <h2 className="font-serif text-2xl text-[#b4caff] font-light">
                   {selectedClient.business_name} — {selectedClient.location_city}
                 </h2>
-                <p className="text-white/40 text-sm font-sans mt-1">
+                <p className="text-white/70 text-sm font-sans mt-1">
                   {selectedClient.location_address}
                 </p>
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <button
                   onClick={() => setFormState({ mode: 'edit', seed: toSeed(selectedClient) })}
-                  className="text-white/70 hover:text-[#c9a87c] text-sm font-sans transition-colors"
+                  className="text-white/70 hover:text-[#b4caff] text-sm font-sans transition-colors"
                 >
                   Edit
                 </button>
                 <button
                   onClick={() => setFormState({ mode: 'clone', seed: toSeed(selectedClient) })}
-                  className="text-white/70 hover:text-[#c9a87c] text-sm font-sans transition-colors"
+                  className="text-white/70 hover:text-[#b4caff] text-sm font-sans transition-colors"
                 >
                   Clone
                 </button>
@@ -342,7 +364,7 @@ export default function AdminDashboard() {
                   href={`${appUrl}/${selectedClient.slug}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[#c9a87c] text-sm font-sans hover:underline"
+                  className="text-[#b4caff] text-sm font-sans hover:underline"
                 >
                   View funnel ↗
                 </a>
@@ -350,28 +372,47 @@ export default function AdminDashboard() {
             </div>
 
             {/* Live URL — prominent + copyable */}
-            <div className="mb-5 p-4 bg-gradient-to-r from-[#c9a87c]/10 to-[#a01b1b]/10 border border-[#c9a87c]/30 rounded-xl">
+            <div className="mb-5 p-4 bg-gradient-to-r from-[#b4caff]/15 via-[#b4caff]/10 to-[#b4caff]/5 border border-[#b4caff]/30 rounded-xl backdrop-blur-sm">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[#c9a87c] text-xs font-sans uppercase tracking-widest mb-1">Live Funnel URL</p>
+                  <p className="text-[#b4caff] text-xs font-sans uppercase tracking-widest mb-1">Live Funnel URL</p>
                   <p className="text-white text-base sm:text-lg font-mono break-all">
                     {appUrl}/{selectedClient.slug}
                   </p>
                 </div>
                 <button
                   onClick={() => copyText(`${appUrl}/${selectedClient.slug}`, 'URL copied — share with client')}
-                  className="bg-[#c9a87c] hover:bg-[#e0c99a] text-[#0a0a0f] font-sans font-medium text-sm px-4 py-2 rounded-lg transition-all shrink-0"
+                  className="bg-[#b4caff] hover:bg-[#d6e3ff] text-[#0a0a0f] font-sans font-medium text-sm px-4 py-2 rounded-lg transition-all shrink-0"
                 >
                   Copy URL
                 </button>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+            {/* Row 1: volume */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
               <Stat label="Total" value={selectedClient.stats.total} />
               <Stat label="Positive" value={selectedClient.stats.positive} highlight="gold" />
               <Stat label="Negative" value={selectedClient.stats.negative} highlight="red" />
               <Stat label="QR Codes" value={qrCodes.length} />
+            </div>
+
+            {/* Row 2: conversion funnel — shows whether generated reviews
+                actually made it out to Google. Percentages are computed
+                against POSITIVE reviews (negatives don't get a Google step). */}
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              <FunnelStat
+                label="Copied"
+                value={selectedClient.stats.copied}
+                denominator={selectedClient.stats.positive}
+                hint="Customer hit the Copy & Post button"
+              />
+              <FunnelStat
+                label="Sent to Google"
+                value={selectedClient.stats.sent_to_google}
+                denominator={selectedClient.stats.positive}
+                hint="Write-review tab was opened (doesn't guarantee submission)"
+              />
             </div>
 
             <div className="space-y-2 text-sm font-sans border-t border-white/10 pt-4">
@@ -401,14 +442,14 @@ export default function AdminDashboard() {
             <div className="space-y-4">
               {/* QR Generator */}
               <GlassCard>
-                <h3 className="font-serif text-xl text-white mb-3 font-light">Generate New QR Code</h3>
+                <h3 className="font-serif text-xl text-[#b4caff] mb-3 font-light">Generate New QR Code</h3>
                 <div className="flex gap-3">
                   <GlassInput
                     placeholder="Label (e.g. Front Desk, Treatment Room 1)"
                     value={qrLabel}
                     onChange={(e) => setQrLabel(e.target.value)}
                   />
-                  <GlassButton onClick={handleGenerateQR} loading={generatingQR}>
+                  <GlassButton variant="admin" onClick={handleGenerateQR} loading={generatingQR}>
                     Generate
                   </GlassButton>
                 </div>
@@ -422,10 +463,10 @@ export default function AdminDashboard() {
                       className="w-32 h-32 bg-white rounded-lg p-2"
                     />
                     <div className="flex-1">
-                      <p className="text-white/80 text-sm font-sans mb-1">Short code: <code className="text-[#c9a87c]">{newQrPreview.short_code}</code></p>
+                      <p className="text-white/80 text-sm font-sans mb-1">Short code: <code className="text-[#b4caff]">{newQrPreview.short_code}</code></p>
                       <p className="text-white/50 text-xs font-mono mb-3 break-all">{newQrPreview.qr_url}</p>
                       <div className="flex gap-2">
-                        <GlassButton variant="primary" onClick={() => downloadQR(newQrPreview.data_url, newQrPreview.short_code)}>
+                        <GlassButton variant="admin" onClick={() => downloadQR(newQrPreview.data_url, newQrPreview.short_code)}>
                           Download PNG
                         </GlassButton>
                         <GlassButton variant="secondary" onClick={() => copyText(newQrPreview.qr_url, 'URL copied')}>
@@ -439,27 +480,38 @@ export default function AdminDashboard() {
 
               {/* Existing QR codes */}
               <GlassCard>
-                <h3 className="font-serif text-xl text-white mb-3 font-light">Existing QR Codes</h3>
+                <h3 className="font-serif text-xl text-[#b4caff] mb-3 font-light">Existing QR Codes</h3>
                 {qrCodes.length === 0 ? (
-                  <p className="text-white/40 text-sm font-sans py-4">No QR codes yet. Generate your first one above.</p>
+                  <p className="text-white/60 text-sm font-sans py-4">No QR codes yet. Generate your first one above.</p>
                 ) : (
                   <div className="divide-y divide-white/5">
                     {qrCodes.map((qr) => (
                       <div key={qr.id} className="py-3 flex items-center justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <div className="text-white/90 text-sm font-sans truncate">{qr.label || 'Unlabeled'}</div>
-                          <div className="text-white/40 text-xs font-mono truncate">{qr.short_code}</div>
+                          <div className="text-white text-sm font-sans truncate">{qr.label || 'Unlabeled'}</div>
+                          <div className="text-[#b4caff]/70 text-xs font-mono truncate">{qr.short_code}</div>
                         </div>
                         <div className="text-right shrink-0">
-                          <div className="text-[#c9a87c] text-lg font-serif">{qr.scan_count}</div>
-                          <div className="text-white/30 text-xs font-sans">scans</div>
+                          <div className="text-[#b4caff] text-lg font-serif">{qr.scan_count}</div>
+                          <div className="text-white/60 text-xs font-sans">scans</div>
                         </div>
-                        <button
-                          onClick={() => copyText(`${appUrl}/q/${qr.short_code}`, 'URL copied')}
-                          className="text-white/40 hover:text-[#c9a87c] text-xs font-sans transition-colors"
-                        >
-                          Copy URL
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <a
+                            href={`${appUrl}/q/${qr.short_code}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[#b4caff]/80 hover:text-[#b4caff] text-xs font-sans transition-colors"
+                            title="Open the QR URL to simulate a scan"
+                          >
+                            Test scan ↗
+                          </a>
+                          <button
+                            onClick={() => copyText(`${appUrl}/q/${qr.short_code}`, 'URL copied')}
+                            className="text-white/60 hover:text-[#b4caff] text-xs font-sans transition-colors"
+                          >
+                            Copy URL
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -470,9 +522,34 @@ export default function AdminDashboard() {
 
           {activeTab === 'reviews' && (
             <GlassCard>
-              <h3 className="font-serif text-xl text-white mb-3 font-light">Recent Reviews</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-serif text-xl text-[#b4caff] font-light">
+                  Recent Reviews
+                  {reviews.length > 0 && (
+                    <span className="text-white/50 text-sm font-sans ml-2">
+                      ({reviews.length})
+                    </span>
+                  )}
+                </h3>
+                <button
+                  onClick={() => {
+                    if (selectedClientId) {
+                      fetchClientData(selectedClientId)
+                      refreshClients()
+                      setToast({ message: 'Refreshed', type: 'success' })
+                    }
+                  }}
+                  className="text-[#b4caff]/80 hover:text-[#b4caff] text-xs font-sans transition-colors flex items-center gap-1"
+                  title="Reload the latest reviews"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Refresh
+                </button>
+              </div>
               {reviews.length === 0 ? (
-                <p className="text-white/40 text-sm font-sans py-4">No reviews yet for this location.</p>
+                <p className="text-white/60 text-sm font-sans py-4">No reviews yet for this location.</p>
               ) : (
                 <div className="divide-y divide-white/5">
                   {reviews.map((r) => (
@@ -489,7 +566,6 @@ export default function AdminDashboard() {
 
       {formState && (
         <NewClientForm
-          adminKey={key}
           mode={formState.mode}
           seed={formState.seed}
           onClose={() => setFormState(null)}
@@ -509,12 +585,43 @@ export default function AdminDashboard() {
 // Sub-components
 // ────────────────────────────────────────────────
 
-function Stat({ label, value, highlight }: { label: string; value: number; highlight?: 'gold' | 'red' }) {
-  const color = highlight === 'gold' ? 'text-[#c9a87c]' : highlight === 'red' ? 'text-red-400' : 'text-white'
+function FunnelStat({
+  label,
+  value,
+  denominator,
+  hint,
+}: {
+  label: string
+  value: number
+  denominator: number
+  hint: string
+}) {
+  const pct = denominator > 0 ? Math.round((value / denominator) * 100) : 0
   return (
-    <div className="bg-white/5 rounded-xl p-3 text-center">
+    <div
+      className="bg-[#b4caff]/5 border border-[#b4caff]/15 rounded-xl p-3"
+      title={hint}
+    >
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-xs font-sans text-white/70 uppercase tracking-widest">{label}</span>
+        {denominator > 0 && (
+          <span className="text-xs font-sans text-[#b4caff]/80">{pct}%</span>
+        )}
+      </div>
+      <div className="mt-1 flex items-baseline gap-1">
+        <span className="text-2xl font-serif text-[#b4caff]">{value}</span>
+        <span className="text-white/50 text-sm font-sans">/ {denominator}</span>
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value, highlight }: { label: string; value: number; highlight?: 'gold' | 'red' }) {
+  const color = highlight === 'gold' ? 'text-[#b4caff]' : highlight === 'red' ? 'text-[#b4caff]/70' : 'text-white'
+  return (
+    <div className="bg-[#b4caff]/5 border border-[#b4caff]/10 rounded-xl p-3 text-center">
       <div className={`text-2xl font-serif ${color}`}>{value}</div>
-      <div className="text-white/40 text-xs font-sans">{label}</div>
+      <div className="text-white/70 text-xs font-sans">{label}</div>
     </div>
   )
 }
@@ -522,10 +629,10 @@ function Stat({ label, value, highlight }: { label: string; value: number; highl
 function DetailRow({ label, value, onCopy }: { label: string; value: string; onCopy?: () => void }) {
   return (
     <div className="flex items-start gap-2">
-      <span className="text-white/40 shrink-0 w-32">{label}:</span>
-      <span className="text-white/80 break-all flex-1">{value}</span>
+      <span className="text-[#b4caff]/70 shrink-0 w-32">{label}:</span>
+      <span className="text-white break-all flex-1">{value}</span>
       {onCopy && (
-        <button onClick={onCopy} className="text-white/30 hover:text-[#c9a87c] text-xs shrink-0 transition-colors">
+        <button onClick={onCopy} className="text-[#b4caff]/70 hover:text-[#b4caff] text-xs shrink-0 transition-colors">
           copy
         </button>
       )}
@@ -539,7 +646,7 @@ function TabButton({ children, active, onClick }: { children: React.ReactNode; a
       onClick={onClick}
       className={`
         px-4 py-2 font-sans text-sm transition-colors -mb-px border-b-2
-        ${active ? 'text-[#c9a87c] border-[#c9a87c]' : 'text-white/40 border-transparent hover:text-white/70'}
+        ${active ? 'text-[#b4caff] border-[#b4caff]' : 'text-white/40 border-transparent hover:text-white/70'}
       `}
     >
       {children}
@@ -553,41 +660,59 @@ function ReviewRowItem({ review, onCopy }: { review: ReviewRow; onCopy: (text: s
   const stars = '★'.repeat(review.star_rating) + '☆'.repeat(5 - review.star_rating)
   const date = new Date(review.created_at).toLocaleString()
   const reviewText = isPositive ? review.generated_review : review.original_comments
+  const preview = reviewText ? reviewText.replace(/\s+/g, ' ').slice(0, 110) : ''
 
   return (
-    <div className="py-3">
+    <div className="py-4">
       <div
         className="flex items-start justify-between cursor-pointer gap-3"
         onClick={() => setExpanded(!expanded)}
       >
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <span className={isPositive ? 'text-[#c9a87c]' : 'text-red-400'}>{stars}</span>
-            <span className="text-white/90 text-sm font-sans truncate">{review.customer_name}</span>
+          {/* Name is the primary identifier — make it prominent so it's
+              easy to match with a Google review later. */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-serif text-base text-white font-medium truncate">
+              {review.customer_name}
+            </span>
+            <span className={isPositive ? 'text-[#b4caff]' : 'text-[#b4caff]/60'}>{stars}</span>
             {review.copied_to_clipboard && (
-              <span className="text-xs bg-[#c9a87c]/10 text-[#c9a87c] px-1.5 py-0.5 rounded">copied</span>
+              <span className="text-xs bg-[#b4caff]/10 text-[#b4caff] px-1.5 py-0.5 rounded">copied</span>
             )}
             {review.redirected_to_google && (
-              <span className="text-xs bg-green-500/10 text-green-400 px-1.5 py-0.5 rounded">posted</span>
+              <span
+                className="text-xs bg-[#b4caff]/15 text-[#b4caff] border border-[#b4caff]/30 px-1.5 py-0.5 rounded"
+                title="Customer was routed to Google's write-review dialog — doesn't guarantee they submitted"
+              >
+                sent to Google
+              </span>
             )}
           </div>
-          <div className="text-white/40 text-xs font-sans">
+          <div className="text-white/60 text-xs font-sans mt-1">
             {date} · {review.source} · {review.service_selected || '—'} · {review.team_member_selected || '—'}
           </div>
+          {/* Review preview so you can scan down the list and spot a
+              specific one without expanding each. */}
+          {preview && !expanded && (
+            <p className="text-white/75 text-sm font-sans mt-2 line-clamp-2 leading-relaxed">
+              {preview}
+              {reviewText && reviewText.length > 110 ? '…' : ''}
+            </p>
+          )}
         </div>
-        <span className="text-white/30 text-xs shrink-0">{expanded ? '−' : '+'}</span>
+        <span className="text-[#b4caff]/60 text-xs shrink-0">{expanded ? '−' : '+'}</span>
       </div>
 
       {expanded && (
-        <div className="mt-3 pl-4 border-l-2 border-white/10 space-y-2 animate-fade-in">
+        <div className="mt-3 pl-4 border-l-2 border-[#b4caff]/20 space-y-2 animate-fade-in">
           {(review.customer_email || review.customer_phone) && (
-            <p className="text-xs font-sans text-white/50">
+            <p className="text-xs font-sans text-white/70">
               Contact: {review.customer_email || review.customer_phone}
             </p>
           )}
           <div className="bg-black/20 rounded-lg p-3">
-            <p className="text-white/80 text-sm font-sans whitespace-pre-wrap leading-relaxed">
-              {reviewText || <em className="text-white/30">No review text</em>}
+            <p className="text-white text-sm font-sans whitespace-pre-wrap leading-relaxed">
+              {reviewText || <em className="text-white/40">No review text</em>}
             </p>
           </div>
           {reviewText && (
@@ -596,7 +721,7 @@ function ReviewRowItem({ review, onCopy }: { review: ReviewRow; onCopy: (text: s
                 e.stopPropagation()
                 onCopy(reviewText)
               }}
-              className="text-[#c9a87c] text-xs font-sans hover:underline"
+              className="text-[#b4caff] text-xs font-sans hover:underline"
             >
               Copy review text
             </button>

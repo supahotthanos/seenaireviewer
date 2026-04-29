@@ -13,24 +13,26 @@ function getRedis() {
 // Per-IP hourly limits (anti-abuse)
 // ────────────────────────────────────────────────────────────
 
-// 20 AI generations per IP per hour
+// 50 AI generations per IP per hour. A busy med spa can have 20+ customers
+// on the shared office Wi-Fi checking out in the same window — they all
+// share one outbound IP, so a tighter limit blocks legitimate customers.
 export function getAIRateLimiter() {
   const redis = getRedis()
   if (!redis) return null
   return new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(20, '1 h'),
+    limiter: Ratelimit.slidingWindow(50, '1 h'),
     prefix: 'rl:ai_hour',
   })
 }
 
-// 100 AI generations per IP per day (catches users spreading abuse over hours)
+// 200 per IP per day — catches sustained abuse without blocking offices.
 export function getAIDailyIpLimiter() {
   const redis = getRedis()
   if (!redis) return null
   return new Ratelimit({
     redis,
-    limiter: Ratelimit.slidingWindow(100, '24 h'),
+    limiter: Ratelimit.slidingWindow(200, '24 h'),
     prefix: 'rl:ai_day_ip',
   })
 }
@@ -107,7 +109,9 @@ export async function checkGlobalMonthlyAILimit(): Promise<{
   used: number
   limit: number
 }> {
-  const monthlyLimit = Number(process.env.MAX_AI_REVIEWS_PER_MONTH || '5000')
+  // Default sized for 5 locations × ~200/day × 30 days = 30k. Increase
+  // proportionally when onboarding more clients (20 clients ≈ 120k/mo).
+  const monthlyLimit = Number(process.env.MAX_AI_REVIEWS_PER_MONTH || '30000')
 
   const startOfMonth = new Date()
   startOfMonth.setUTCDate(1)

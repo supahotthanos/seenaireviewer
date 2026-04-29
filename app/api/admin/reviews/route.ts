@@ -23,7 +23,8 @@ export async function GET(request: NextRequest) {
   const { data: reviews, error } = await query
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[admin/reviews] GET error:', error.message)
+    return NextResponse.json({ error: 'Failed to list reviews' }, { status: 500 })
   }
 
   return NextResponse.json({ reviews })

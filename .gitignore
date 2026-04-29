@@ -35,3 +35,10 @@ next-env.d.ts
 .vercel
 
 .vercel
+
+# Local tooling state
+.claude/
+.playwright-mcp/
+
+# Generated QR PNGs (regenerated per-client)
+qrcodes/

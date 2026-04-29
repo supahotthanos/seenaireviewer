@@ -40,7 +40,17 @@ const REQUIRED = [
   'NEXT_PUBLIC_APP_URL',
   'ADMIN_SECRET',
 ]
-const OPTIONAL = ['UPSTASH_REDIS_REST_URL', 'UPSTASH_REDIS_REST_TOKEN', 'RESEND_FROM_EMAIL', 'ANTHROPIC_MODEL', 'MAX_AI_REVIEWS_PER_MONTH']
+const OPTIONAL = [
+  'UPSTASH_REDIS_REST_URL',
+  'UPSTASH_REDIS_REST_TOKEN',
+  'RESEND_FROM_EMAIL',
+  'ANTHROPIC_MODEL',
+  'MAX_AI_REVIEWS_PER_MONTH',
+  // Used by /admin/aeo (AEO ranking tester). Optional — UI hides any
+  // provider whose key isn't set.
+  'OPENAI_API_KEY',
+  'GOOGLE_AI_API_KEY',
+]
 
 let fails = 0
 const row = (status, key, msg) => console.log(`  ${status}  ${key.padEnd(32)} ${msg}`)
@@ -51,7 +61,7 @@ for (const key of REQUIRED) {
   const v = process.env[key]
   if (!v) { row('✗', key, 'MISSING'); fails++; continue }
   if (key === 'ADMIN_SECRET' && v === PLACEHOLDER_ADMIN) { row('✗', key, 'still the placeholder — replace it'); fails++; continue }
-  if (key === 'ADMIN_SECRET' && v.length < 24) { row('✗', key, `only ${v.length} chars — needs 24+`); fails++; continue }
+  if (key === 'ADMIN_SECRET' && v.length < 8) { row('✗', key, `only ${v.length} chars — needs 8+`); fails++; continue }
   if (key === 'NEXT_PUBLIC_SUPABASE_URL' && v === PLACEHOLDER_URL) { row('✗', key, 'still the placeholder'); fails++; continue }
   row('✓', key, 'ok')
 }

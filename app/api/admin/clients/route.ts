@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { revalidateTag } from 'next/cache'
 import { supabaseServer } from '@/lib/supabase-server'
 import { verifyAdminSecret } from '@/lib/admin-auth'
 import { createClientSchema } from '@/lib/validation'
+
+// Partial version of createClientSchema for PATCH — every field becomes
+// optional, but the individual field rules (email format, hex color,
+// URL format, min/max) are still enforced when provided. Prevents admins
+// from writing invalid values like daily_ai_limit: "abc" or services: [].
+const updateClientSchema = createClientSchema.partial().omit({ slug: true })
 
 export async function GET(request: NextRequest) {
   if (!verifyAdminSecret(request)) {
@@ -14,25 +21,46 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: false })
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[admin/clients] GET error:', error.message)
+    return NextResponse.json({ error: 'Failed to list clients' }, { status: 500 })
   }
 
-  // Get review counts per client
+  // Get review counts per client. Also surface the conversion funnel:
+  // how many reviews were copied + how many made it to Google's review
+  // dialog. This is what the admin actually cares about (is the funnel
+  // converting, not just generating).
   const { data: reviewCounts } = await supabaseServer
     .from('reviews')
-    .select('client_id, review_type')
+    .select('client_id, review_type, copied_to_clipboard, redirected_to_google')
 
-  const stats: Record<string, { positive: number; negative: number; total: number }> = {}
+  type ClientStats = {
+    positive: number
+    negative: number
+    total: number
+    copied: number
+    sent_to_google: number
+  }
+  const empty = (): ClientStats => ({
+    positive: 0,
+    negative: 0,
+    total: 0,
+    copied: 0,
+    sent_to_google: 0,
+  })
+  const stats: Record<string, ClientStats> = {}
   for (const r of reviewCounts || []) {
-    if (!stats[r.client_id]) stats[r.client_id] = { positive: 0, negative: 0, total: 0 }
-    stats[r.client_id].total++
-    if (r.review_type === 'positive') stats[r.client_id].positive++
-    else stats[r.client_id].negative++
+    if (!stats[r.client_id]) stats[r.client_id] = empty()
+    const s = stats[r.client_id]
+    s.total++
+    if (r.review_type === 'positive') s.positive++
+    else s.negative++
+    if (r.copied_to_clipboard) s.copied++
+    if (r.redirected_to_google) s.sent_to_google++
   }
 
   const enriched = (clients || []).map((c) => ({
     ...c,
-    stats: stats[c.id] || { positive: 0, negative: 0, total: 0 },
+    stats: stats[c.id] || empty(),
   }))
 
   return NextResponse.json({ clients: enriched })
@@ -77,6 +105,7 @@ export async function POST(request: NextRequest) {
       location_address: data.location_address || null,
       location_city: data.location_city,
       google_place_id: data.google_place_id,
+      google_review_url: data.google_review_url || null,
       notification_email: emails.join(', '),
       brand_color_primary: data.brand_color_primary,
       brand_color_secondary: data.brand_color_secondary,
@@ -84,6 +113,7 @@ export async function POST(request: NextRequest) {
       custom_domain: data.custom_domain || null,
       services: data.services,
       team_members: data.team_members,
+      aliases: data.aliases ?? [],
       daily_ai_limit: data.daily_ai_limit,
       is_active: data.is_active,
     })
@@ -97,8 +127,11 @@ export async function POST(request: NextRequest) {
         { status: 409 }
       )
     }
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    console.error('[admin/clients] POST error:', error.message)
+    return NextResponse.json({ error: 'Failed to create client' }, { status: 500 })
   }
+
+  revalidateTag('clients')
 
   return NextResponse.json({ client: created }, { status: 201 })
 }
@@ -111,7 +144,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  let body: { id?: string; updates?: Partial<Record<string, unknown>> }
+  let body: { id?: string; updates?: Record<string, unknown> }
   try {
     body = await request.json()
   } catch {
@@ -123,27 +156,22 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: 'id and updates required' }, { status: 400 })
   }
 
-  // Whitelist allowed fields
-  const allowedFields = [
-    'business_name',
-    'location_address',
-    'location_city',
-    'google_place_id',
-    'notification_email',
-    'brand_color_primary',
-    'brand_color_secondary',
-    'logo_url',
-    'custom_domain',
-    'services',
-    'team_members',
-    'daily_ai_limit',
-    'is_active',
-  ]
-
-  const cleanUpdates: Record<string, unknown> = {}
-  for (const key of allowedFields) {
-    if (key in updates) cleanUpdates[key] = updates[key]
+  // Validate the update payload with the partial schema so individual
+  // field rules are enforced (email format, hex color, URL format, array
+  // length). Unknown fields are silently dropped by Zod.
+  const parsed = updateClientSchema.safeParse(updates)
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Validation failed', details: parsed.error.flatten().fieldErrors },
+      { status: 400 }
+    )
   }
+
+  // Normalize empty-string optional URLs to null so the DB stores null, not "".
+  const cleanUpdates: Record<string, unknown> = { ...parsed.data }
+  if (cleanUpdates.logo_url === '') cleanUpdates.logo_url = null
+  if (cleanUpdates.google_review_url === '') cleanUpdates.google_review_url = null
+  if (cleanUpdates.custom_domain === '') cleanUpdates.custom_domain = null
 
   if (Object.keys(cleanUpdates).length === 0) {
     return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 })
@@ -157,8 +185,15 @@ export async function PATCH(request: NextRequest) {
     .single()
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    // Never leak Supabase's raw error message (can expose column names,
+    // constraint names, etc.). Log server-side and return a generic msg.
+    console.error('[admin/clients] PATCH error:', error.message)
+    return NextResponse.json({ error: 'Failed to update client' }, { status: 500 })
   }
+
+  // Invalidate the cached public funnel page so admin edits surface
+  // immediately instead of after the 60s TTL expires.
+  revalidateTag('clients')
 
   return NextResponse.json({ client: updated })
 }

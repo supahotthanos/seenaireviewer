@@ -16,6 +16,7 @@ export interface ClientSeed {
   location_address?: string | null
   location_city?: string
   google_place_id?: string
+  google_review_url?: string | null
   notification_email?: string
   brand_color_primary?: string
   brand_color_secondary?: string
@@ -23,12 +24,12 @@ export interface ClientSeed {
   custom_domain?: string | null
   services?: string[]
   team_members?: string[]
+  aliases?: string[] | null
   daily_ai_limit?: number
   is_active?: boolean
 }
 
 interface NewClientFormProps {
-  adminKey: string
   onClose: () => void
   onSaved: (slug: string, mode: ClientFormMode) => void
   mode?: ClientFormMode
@@ -58,6 +59,7 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
     location_address: '',
     location_city: '',
     google_place_id: '',
+    google_review_url: '',
     notification_email: '',
     brand_color_primary: '#c9a87c',
     brand_color_secondary: '#a01b1b',
@@ -65,6 +67,7 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
     custom_domain: '',
     services_text: '',
     team_text: '',
+    aliases_text: '',
     daily_ai_limit: 50,
     is_active: true,
   }
@@ -78,6 +81,7 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
   base.logo_url = seed.logo_url ?? ''
   base.services_text = (seed.services ?? []).join('\n')
   base.team_text = (seed.team_members ?? []).join('\n')
+  base.aliases_text = (seed.aliases ?? []).join('\n')
   base.daily_ai_limit = seed.daily_ai_limit ?? 50
   base.is_active = seed.is_active ?? true
 
@@ -89,13 +93,13 @@ function buildInitialForm(mode: ClientFormMode, seed: ClientSeed | null | undefi
     base.location_address = seed.location_address ?? ''
     base.location_city = seed.location_city ?? ''
     base.google_place_id = seed.google_place_id ?? ''
+    base.google_review_url = seed.google_review_url ?? ''
   }
 
   return base
 }
 
 export default function NewClientForm({
-  adminKey,
   onClose,
   onSaved,
   mode = 'create',
@@ -133,6 +137,7 @@ export default function NewClientForm({
 
     const services = parseList(form.services_text)
     const team_members = parseList(form.team_text)
+    const aliases = parseList(form.aliases_text)
 
     if (services.length === 0) {
       setError('Add at least one service (one per line)')
@@ -161,7 +166,7 @@ export default function NewClientForm({
       let response: Response
       if (isEdit) {
         if (!seed?.id) throw new Error('Missing client id for edit')
-        response = await fetch(`/api/admin/clients?key=${encodeURIComponent(adminKey)}`, {
+        response = await fetch('/api/admin/clients', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -171,6 +176,7 @@ export default function NewClientForm({
               location_address: form.location_address || null,
               location_city: form.location_city,
               google_place_id: form.google_place_id,
+              google_review_url: form.google_review_url || null,
               notification_email: form.notification_email,
               brand_color_primary: form.brand_color_primary,
               brand_color_secondary: form.brand_color_secondary,
@@ -178,13 +184,14 @@ export default function NewClientForm({
               custom_domain: form.custom_domain || null,
               services,
               team_members,
+              aliases,
               daily_ai_limit: form.daily_ai_limit,
               is_active: form.is_active,
             },
           }),
         })
       } else {
-        response = await fetch(`/api/admin/clients?key=${encodeURIComponent(adminKey)}`, {
+        response = await fetch('/api/admin/clients', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -193,6 +200,7 @@ export default function NewClientForm({
             location_address: form.location_address || undefined,
             location_city: form.location_city,
             google_place_id: form.google_place_id,
+            google_review_url: form.google_review_url || undefined,
             notification_email: form.notification_email,
             brand_color_primary: form.brand_color_primary,
             brand_color_secondary: form.brand_color_secondary,
@@ -200,6 +208,7 @@ export default function NewClientForm({
             custom_domain: form.custom_domain || undefined,
             services,
             team_members,
+            aliases,
             daily_ai_limit: form.daily_ai_limit,
           }),
         })
@@ -235,18 +244,18 @@ export default function NewClientForm({
         <div className="max-w-md mx-auto mt-12">
           <GlassCard className="text-center">
             <div className="flex justify-center mb-4">
-              <div className="w-14 h-14 rounded-full bg-[#c9a87c]/10 border border-[#c9a87c]/20 flex items-center justify-center">
-                <svg className="w-6 h-6 text-[#c9a87c]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <div className="w-14 h-14 rounded-full bg-[#b4caff]/10 border border-[#b4caff]/20 flex items-center justify-center">
+                <svg className="w-6 h-6 text-[#b4caff]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
             </div>
-            <h2 className="font-serif text-2xl text-white mb-2 font-light">{title}</h2>
-            <p className="text-white/50 text-sm font-sans mb-5">{subtitle}</p>
+            <h2 className="font-serif text-2xl text-[#b4caff] mb-2 font-light">{title}</h2>
+            <p className="text-white/80 text-sm font-sans mb-5">{subtitle}</p>
 
             <div className="bg-black/30 rounded-xl p-4 mb-5">
-              <p className="text-white/40 text-xs font-sans mb-1">Live URL</p>
-              <p className="text-[#c9a87c] text-sm font-mono break-all">{success.url}</p>
+              <p className="text-[#b4caff] text-xs font-sans mb-1 uppercase tracking-widest">Live URL</p>
+              <p className="text-[#b4caff] text-sm font-mono break-all">{success.url}</p>
             </div>
 
             <div className="flex gap-2">
@@ -257,7 +266,7 @@ export default function NewClientForm({
               >
                 Copy URL
               </GlassButton>
-              <GlassButton variant="primary" fullWidth onClick={onClose}>
+              <GlassButton variant="admin" fullWidth onClick={onClose}>
                 Done
               </GlassButton>
             </div>
@@ -296,7 +305,7 @@ export default function NewClientForm({
         <div className="max-w-2xl w-full my-8">
           <GlassCard>
             <div className="flex items-center justify-between mb-6">
-              <h2 className="font-serif text-2xl text-white font-light">{headerTitle}</h2>
+              <h2 className="font-serif text-2xl text-[#b4caff] font-light">{headerTitle}</h2>
               <button
                 onClick={onClose}
                 className="text-white/40 hover:text-white transition-colors text-2xl leading-none"
@@ -307,14 +316,14 @@ export default function NewClientForm({
             </div>
 
             {cloneHint && (
-              <div className="mb-4 p-3 bg-[#c9a87c]/10 border border-[#c9a87c]/30 rounded-xl text-[#c9a87c] text-sm font-sans">
+              <div className="mb-4 p-3 bg-[#b4caff]/10 border border-[#b4caff]/30 rounded-xl text-[#b4caff] text-sm font-sans">
                 {cloneHint}
               </div>
             )}
 
             {/* Live preview */}
             <div className="mb-6 p-4 bg-black/20 rounded-xl border border-white/5">
-              <p className="text-white/30 text-xs font-sans uppercase tracking-widest mb-2">Preview</p>
+              <p className="text-[#b4caff]/70 text-xs font-sans uppercase tracking-widest mb-2">Preview</p>
               <BrandHeader client={previewClient} size="sm" showAddress={false} />
             </div>
 
@@ -343,7 +352,7 @@ export default function NewClientForm({
                   <div className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white/60 font-mono text-sm">
                     /{form.slug}
                   </div>
-                  <p className="text-white/40 text-xs font-sans mt-1">
+                  <p className="text-white/70 text-xs font-sans mt-1">
                     The URL slug cannot change — existing QR codes, SMS links, and bookmarks point to it.
                   </p>
                 </div>
@@ -355,8 +364,8 @@ export default function NewClientForm({
                     value={form.slug}
                     onChange={(e) => setForm((f) => ({ ...f, slug: slugify(e.target.value) }))}
                   />
-                  <p className="text-white/40 text-xs font-sans -mt-3">
-                    Will be live at: <span className="text-[#c9a87c]">/{form.slug || 'your-slug'}</span>
+                  <p className="text-white/70 text-xs font-sans -mt-3">
+                    Will be live at: <span className="text-[#b4caff]">/{form.slug || 'your-slug'}</span>
                   </p>
                 </>
               )}
@@ -384,13 +393,13 @@ export default function NewClientForm({
                   onChange={(e) => setForm((f) => ({ ...f, google_place_id: e.target.value }))}
                 />
                 <div className="flex items-center justify-between flex-wrap gap-2 mt-2">
-                  <p className="text-white/40 text-xs font-sans">
+                  <p className="text-white/70 text-xs font-sans">
                     Find at:{' '}
                     <a
                       href="https://developers.google.com/maps/documentation/places/web-service/place-id"
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[#c9a87c] hover:underline"
+                      className="text-[#b4caff] hover:underline"
                     >
                       Google Place ID Finder ↗
                     </a>
@@ -403,19 +412,65 @@ export default function NewClientForm({
                         return
                       }
                       setError(null)
+                      const testParams = new URLSearchParams({
+                        placeid: form.google_place_id,
+                        source: 'g.page.m.ia._',
+                        utm_source: 'gbp',
+                        laa: 'nmx-review-solicitation-ia2',
+                      })
                       window.open(
-                        `https://search.google.com/local/writereview?placeid=${encodeURIComponent(form.google_place_id)}`,
+                        `https://search.google.com/local/writereview?${testParams.toString()}`,
                         '_blank',
                         'noopener,noreferrer'
                       )
                     }}
-                    className="text-xs font-sans bg-[#c9a87c]/10 hover:bg-[#c9a87c]/20 text-[#c9a87c] border border-[#c9a87c]/30 px-3 py-1.5 rounded-lg transition-all"
+                    className="text-xs font-sans bg-[#b4caff]/10 hover:bg-[#b4caff]/20 text-[#b4caff] border border-[#b4caff]/30 px-3 py-1.5 rounded-lg transition-all"
                   >
                     Test Google Link ↗
                   </button>
                 </div>
-                <p className="text-white/30 text-xs font-sans mt-1">
+                <p className="text-[#b4caff]/70 text-xs font-sans mt-1">
                   Click &ldquo;Test Google Link&rdquo; — the Google review form should open for the correct business. If wrong, your Place ID is wrong.
+                </p>
+              </div>
+
+              {/* Google Review URL override — recommended for reliable mobile flow */}
+              <div>
+                <GlassInput
+                  label="Google Review URL Override (optional — only used if Place ID is blank)"
+                  placeholder="https://g.page/r/XXXXXX/review"
+                  value={form.google_review_url}
+                  onChange={(e) => setForm((f) => ({ ...f, google_review_url: e.target.value }))}
+                />
+                <div className="flex items-center justify-between flex-wrap gap-2 mt-2">
+                  <p className="text-white/70 text-xs font-sans">
+                    From Google Business Profile → <span className="text-[#b4caff]">Get more reviews</span>. Or generate at{' '}
+                    <a
+                      href="https://whitespark.ca/google-review-link-generator/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#b4caff] hover:underline"
+                    >
+                      Whitespark&apos;s free generator ↗
+                    </a>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!form.google_review_url || !/^https?:\/\//.test(form.google_review_url)) {
+                        setError('Enter a full https:// Google review URL first')
+                        return
+                      }
+                      setError(null)
+                      window.open(form.google_review_url, '_blank', 'noopener,noreferrer')
+                    }}
+                    className="text-xs font-sans bg-[#b4caff]/10 hover:bg-[#b4caff]/20 text-[#b4caff] border border-[#b4caff]/30 px-3 py-1.5 rounded-lg transition-all"
+                  >
+                    Test on mobile ↗
+                  </button>
+                </div>
+                <p className="text-[#b4caff]/70 text-xs font-sans mt-1">
+                  Leave blank unless you don&apos;t have a Place ID. The Place ID above already builds the correct mobile-optimized review URL with Google&apos;s in-app solicitation params.
                 </p>
               </div>
 
@@ -425,7 +480,7 @@ export default function NewClientForm({
                 value={form.notification_email}
                 onChange={(e) => setForm((f) => ({ ...f, notification_email: e.target.value }))}
               />
-              <p className="text-white/40 text-xs font-sans -mt-3">
+              <p className="text-white/70 text-xs font-sans -mt-3">
                 Comma-separate multiple emails. All will receive bad-review alerts.
               </p>
 
@@ -437,8 +492,8 @@ export default function NewClientForm({
                 value={form.services_text}
                 onChange={(e) => setForm((f) => ({ ...f, services_text: e.target.value }))}
               />
-              <p className="text-white/40 text-xs font-sans -mt-3">
-                Parsed: <span className="text-[#c9a87c]">{parseList(form.services_text).length}</span> services
+              <p className="text-white/70 text-xs font-sans -mt-3">
+                Parsed: <span className="text-[#b4caff]">{parseList(form.services_text).length}</span> services
               </p>
 
               <GlassTextarea
@@ -448,13 +503,25 @@ export default function NewClientForm({
                 value={form.team_text}
                 onChange={(e) => setForm((f) => ({ ...f, team_text: e.target.value }))}
               />
-              <p className="text-white/40 text-xs font-sans -mt-3">
-                Parsed: <span className="text-[#c9a87c]">{parseList(form.team_text).length}</span> team members
+              <p className="text-white/70 text-xs font-sans -mt-3">
+                Parsed: <span className="text-[#b4caff]">{parseList(form.team_text).length}</span> team members
+              </p>
+
+              {/* Optional alias list — used by AEO ranking tester for mention detection */}
+              <GlassTextarea
+                label="Name aliases (optional, one per line)"
+                placeholder={'LovMedSpa\nLov MedSpa\nLov Med Spa\nLMS Brooklyn'}
+                rows={3}
+                value={form.aliases_text}
+                onChange={(e) => setForm((f) => ({ ...f, aliases_text: e.target.value }))}
+              />
+              <p className="text-white/70 text-xs font-sans -mt-3">
+                Used by <span className="text-[#b4caff]">/admin/aeo</span> to detect mentions in LLM responses. Leave blank to auto-derive (CamelCase splits, possessive, plural). Add custom spellings here only if you want to catch how the LLMs actually write the name.
               </p>
 
               {/* Branding */}
               <div className="border-t border-white/10 pt-4">
-                <p className="text-white/60 text-sm font-sans mb-3">Branding (optional)</p>
+                <p className="text-[#b4caff] text-sm font-sans mb-3 uppercase tracking-widest">Branding (optional)</p>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -504,7 +571,7 @@ export default function NewClientForm({
                     value={form.logo_url}
                     onChange={(e) => setForm((f) => ({ ...f, logo_url: e.target.value }))}
                   />
-                  <p className="text-white/40 text-xs font-sans mt-1">
+                  <p className="text-white/70 text-xs font-sans mt-1">
                     Paste any image URL. If blank, the business name will be styled with the brand colors.
                   </p>
                 </div>
@@ -522,7 +589,7 @@ export default function NewClientForm({
                     setForm((f) => ({ ...f, daily_ai_limit: Math.max(1, Math.min(1000, Number(e.target.value) || 50)) }))
                   }
                 />
-                <p className="text-white/40 text-xs font-sans">
+                <p className="text-white/70 text-xs font-sans">
                   Caps how many AI reviews this location can generate per day. Default 50. Protects your Anthropic credits from abuse.
                 </p>
 
@@ -532,7 +599,7 @@ export default function NewClientForm({
                       type="checkbox"
                       checked={form.is_active}
                       onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))}
-                      className="w-4 h-4 accent-[#c9a87c]"
+                      className="w-4 h-4 accent-[#b4caff]"
                     />
                     <span className="text-white/80 text-sm font-sans">
                       Active — uncheck to disable this location without deleting it
@@ -554,7 +621,7 @@ export default function NewClientForm({
                   Cancel
                 </GlassButton>
                 <GlassButton
-                  variant="primary"
+                  variant="admin"
                   onClick={handleSubmit}
                   loading={submitting}
                   fullWidth

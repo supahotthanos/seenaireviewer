@@ -63,6 +63,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
   const [reviewId, setReviewId] = useState<string | null>(null)
   const [editedReview, setEditedReview] = useState('')
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  const [isPosting, setIsPosting] = useState(false)
 
   const reviewTextareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -119,6 +120,13 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
     setIsLoading(true)
     setStep('generating')
 
+    // Client-side timeout: if the server (Anthropic + DB insert) takes
+    // longer than 25s, abort so the customer sees an error instead of a
+    // stuck spinner. Anthropic's own timeout is 15s — this is the outer
+    // guard in case the serverless function itself hangs.
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 25_000)
+
     try {
       const response = await fetch('/api/generate-review', {
         method: 'POST',
@@ -134,6 +142,7 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
           qr_code: qrCode,
           honeypot: positiveForm.honeypot,
         }),
+        signal: controller.signal,
       })
 
       const data = await response.json()
@@ -147,10 +156,16 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
       setReviewId(data.review_id)
       setStep('review-ready')
     } catch (error) {
-      const msg = error instanceof Error ? error.message : 'Something went wrong. Please try again.'
+      const msg =
+        error instanceof DOMException && error.name === 'AbortError'
+          ? 'This is taking longer than expected. Please try again.'
+          : error instanceof Error
+          ? error.message
+          : 'Something went wrong. Please try again.'
       setToast({ message: msg, type: 'error' })
       setStep('positive-form')
     } finally {
+      clearTimeout(timeoutId)
       setIsLoading(false)
     }
   }
@@ -192,34 +207,86 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
     }
   }
 
-  const handleCopyReview = async () => {
-    try {
-      await navigator.clipboard.writeText(editedReview)
-      setToast({ message: 'Review copied to clipboard!', type: 'success' })
+  // Build the GBP-style write-review URL. Same params Google's own QR codes
+  // use — triggers the review dialog directly on mobile, not the profile.
+  const buildGoogleReviewUrl = (): string => {
+    const pid = (client.google_place_id || '').trim()
+    const override = client.google_review_url?.trim()
+    if (/^ChIJ/i.test(pid)) {
+      const params = new URLSearchParams({
+        placeid: pid,
+        source: 'g.page.m.ia._',
+        utm_source: 'gbp',
+        laa: 'nmx-review-solicitation-ia2',
+      })
+      return `https://search.google.com/local/writereview?${params.toString()}`
+    }
+    if (override) return override
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      `${client.business_name} ${client.location_address || client.location_city}`
+    )}`
+  }
 
-      // Track copy event
-      if (reviewId) {
-        fetch(`/api/reviews/${reviewId}/track`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ copied_to_clipboard: true }),
-        }).catch(() => {})
+  // Belt-and-suspenders clipboard copy. Modern Clipboard API first, then the
+  // execCommand fallback for older iOS / strict permission contexts. Works
+  // even when the page is briefly unfocused (which happens on iOS Safari
+  // when a new tab opens).
+  const copyToClipboard = (text: string, fallbackEl?: HTMLTextAreaElement | null): boolean => {
+    // Try execCommand first if we have a textarea — it's the most reliable
+    // path on iOS Safari because it uses DOM selection (same user gesture).
+    if (fallbackEl) {
+      try {
+        fallbackEl.focus()
+        fallbackEl.setSelectionRange(0, text.length)
+        const ok = document.execCommand('copy')
+        fallbackEl.setSelectionRange(text.length, text.length) // deselect
+        if (ok) return true
+      } catch {
+        /* fall through */
       }
+    }
+    // Modern API fallback (fire-and-forget; may resolve after window.open
+    // on iOS but still succeeds because it was initiated in the gesture).
+    try {
+      navigator.clipboard?.writeText(text).catch(() => {})
+      return true
     } catch {
-      setToast({ message: 'Copy failed. Please select and copy manually.', type: 'error' })
+      return false
     }
   }
 
+  // Single-tap flow: copy the review AND open Google's write-review dialog.
+  // Critical order for iOS Safari:
+  //   1. Copy FIRST via execCommand (stays in user gesture)
+  //   2. window.open SYNCHRONOUSLY right after (avoids popup blocker)
+  //   3. Track events in the background (fire-and-forget)
   const handlePostToGoogle = () => {
-    const googleUrl = `https://search.google.com/local/writereview?placeid=${client.google_place_id}`
+    if (isPosting) return // debounce — prevent multiple window.opens on rapid taps
+    setIsPosting(true)
+    // Re-enable after 2s. Long enough to cover a second tap before the new
+    // tab opens, short enough that a customer who returns and wants to
+    // re-trigger isn't blocked.
+    setTimeout(() => setIsPosting(false), 2000)
+
+    const copied = copyToClipboard(editedReview, reviewTextareaRef.current)
+    const googleUrl = buildGoogleReviewUrl()
+    // window.open MUST be synchronous inside the click handler — any prior
+    // await/Promise breaks iOS's popup-block gesture window.
     window.open(googleUrl, '_blank', 'noopener,noreferrer')
 
-    // Track redirect
+    setToast({
+      message: copied
+        ? 'Copied! Paste in the Google review box.'
+        : 'Long-press the text above to copy, then paste in Google.',
+      type: copied ? 'success' : 'error',
+    })
+
+    // Track both events in one PATCH
     if (reviewId) {
       fetch(`/api/reviews/${reviewId}/track`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ redirected_to_google: true }),
+        body: JSON.stringify({ copied_to_clipboard: copied, redirected_to_google: true }),
       }).catch(() => {})
     }
   }
@@ -235,17 +302,17 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
       <div className="animate-slide-up">
         <BrandHeader client={client} />
         <GlassCard className="text-center">
-          <h1 className="font-serif text-3xl text-white mb-2 font-light">
+          <h1 className="font-serif text-3xl text-[color:var(--text)] mb-2 font-light">
             How was your visit?
           </h1>
-          <p className="text-white/50 text-sm font-sans mb-8">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans mb-8">
             Your experience matters to us
           </p>
           <div className="flex justify-center mb-6">
             <StarRating value={rating} onChange={handleRatingSelect} size="lg" />
           </div>
           {rating > 0 && (
-            <p className="text-white/40 text-xs font-sans animate-fade-in">
+            <p className="text-[color:var(--text-muted)] text-xs font-sans animate-fade-in">
               {rating >= 4 ? 'Great! Tap to confirm' : 'Tap to confirm'}
             </p>
           )}
@@ -268,10 +335,10 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
           <div className="flex items-center gap-2 mb-1">
             <StarRating value={rating} onChange={() => {}} size="sm" readonly />
           </div>
-          <h2 className="font-serif text-2xl text-white mb-1 font-light">
+          <h2 className="font-serif text-2xl text-[color:var(--text)] mb-1 font-light">
             {FUNNEL_COPY.POSITIVE_TITLE}
           </h2>
-          <p className="text-white/50 text-sm font-sans mb-6">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans mb-6">
             {FUNNEL_COPY.POSITIVE_SUBTITLE}
           </p>
 
@@ -355,10 +422,10 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
           <div className="flex justify-center mb-6">
             <div className="w-14 h-14 rounded-full border-2 border-[#c9a87c]/30 border-t-[#c9a87c] animate-spin" />
           </div>
-          <h2 className="font-serif text-2xl text-white mb-2 font-light">
+          <h2 className="font-serif text-2xl text-[color:var(--text)] mb-2 font-light">
             {FUNNEL_COPY.GENERATING_TITLE}
           </h2>
-          <p className="text-white/50 text-sm font-sans">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans">
             {FUNNEL_COPY.GENERATING_SUBTITLE}
           </p>
         </GlassCard>
@@ -377,10 +444,10 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
           <div className="mb-6">
             <StepIndicator steps={3} current={3} />
           </div>
-          <h2 className="font-serif text-2xl text-white mb-1 font-light">
+          <h2 className="font-serif text-2xl text-[color:var(--text)] mb-1 font-light">
             {FUNNEL_COPY.REVIEW_READY_TITLE}
           </h2>
-          <p className="text-white/50 text-sm font-sans mb-6">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans mb-6">
             {FUNNEL_COPY.REVIEW_READY_SUBTITLE}
           </p>
 
@@ -396,33 +463,54 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
             currentLength={editedReview.length}
           />
 
-          <div className="flex flex-col sm:flex-row gap-3 mt-6">
-            <GlassButton
-              onClick={handleCopyReview}
-              variant="secondary"
-              fullWidth
-              className="sm:flex-1"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          {/* Prominent red-glow paste reminder — impossible to miss.
+              Shown BEFORE the button so customers know exactly what to do
+              as soon as the new tab opens. */}
+          <div
+            className="paste-reminder mt-6 p-4 rounded-xl border-2 border-red-500/80 bg-red-500/10 dark:bg-red-500/15"
+            role="alert"
+          >
+            <div className="flex items-start gap-3">
+              <svg
+                className="w-6 h-6 shrink-0 text-red-600 dark:text-red-400 mt-0.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2.5}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"
+                />
               </svg>
-              Copy Review
-            </GlassButton>
+              <div className="flex-1">
+                <p className="font-serif text-lg text-red-700 dark:text-red-300 font-medium mb-1 leading-tight">
+                  Don&apos;t forget to paste your review!
+                </p>
+                <p className="text-sm text-black/75 dark:text-white/85 font-sans leading-relaxed">
+                  Your review is already copied. On the next screen, <span className="font-semibold underline decoration-red-500/60 underline-offset-2">long-press the Google review box</span> and tap <span className="font-semibold">Paste</span>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4">
             <GlassButton
               onClick={handlePostToGoogle}
               variant="primary"
               fullWidth
-              className="sm:flex-1"
+              disabled={isPosting}
             >
-              Post to Google
+              Copy &amp; Post to Google
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
               </svg>
             </GlassButton>
           </div>
 
-          <p className="text-white/30 text-xs font-sans text-center mt-4">
-            Copy the review first, then tap &ldquo;Post to Google&rdquo; to open the review page.
+          <p className="text-[color:var(--text-subtle)] text-xs font-sans text-center mt-4">
+            If Google shows the business page, tap &ldquo;Write a review&rdquo; and paste there.
           </p>
         </GlassCard>
 
@@ -448,10 +536,10 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
           <div className="flex items-center gap-2 mb-1">
             <StarRating value={rating} onChange={() => {}} size="sm" readonly />
           </div>
-          <h2 className="font-serif text-2xl text-white mb-1 font-light">
+          <h2 className="font-serif text-2xl text-[color:var(--text)] mb-1 font-light">
             {FUNNEL_COPY.NEGATIVE_TITLE}
           </h2>
-          <p className="text-white/50 text-sm font-sans mb-6">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans mb-6">
             {FUNNEL_COPY.NEGATIVE_SUBTITLE}
           </p>
 
@@ -538,10 +626,10 @@ export default function ReviewFunnel({ client }: ReviewFunnelProps) {
               </svg>
             </div>
           </div>
-          <h2 className="font-serif text-2xl text-white mb-2 font-light">
+          <h2 className="font-serif text-2xl text-[color:var(--text)] mb-2 font-light">
             {FUNNEL_COPY.FEEDBACK_SENT_TITLE}
           </h2>
-          <p className="text-white/50 text-sm font-sans leading-relaxed">
+          <p className="text-[color:var(--text-muted)] text-sm font-sans leading-relaxed">
             {FUNNEL_COPY.FEEDBACK_SENT_SUBTITLE}
           </p>
         </GlassCard>

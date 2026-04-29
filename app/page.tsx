@@ -4,11 +4,11 @@ export default function HomePage() {
       <div className="text-center">
         <div className="mb-4">
           <span className="font-serif text-5xl font-light tracking-wide">
-            <span className="text-[#a01b1b]">Seen</span>
-            <span className="text-[#c9a87c]">AI</span>
+            <span className="text-[#b4caff]">Seen</span>
+            <span className="text-[#b4caff]">AI</span>
           </span>
         </div>
-        <p className="text-white/40 text-sm font-sans tracking-widest uppercase">Reviews</p>
+        <p className="text-[#b4caff]/70 text-sm font-sans tracking-widest uppercase">Reviews</p>
       </div>
     </main>
   )
