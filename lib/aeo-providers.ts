@@ -307,6 +307,14 @@ export interface RunRequest {
    * surfaced via RunResult.systemFingerprint for drift detection.
    */
   seed?: number
+  /**
+   * Date string (YYYY-MM-DD) injected into the system instruction so all
+   * providers see the same anchor. Eliminates the "what year does this
+   * model think it is?" variance — without it, models will disagree based
+   * on their training cutoffs and hallucinate seasonal context. When
+   * undefined, callers should pass today's date for consistency.
+   */
+  injectedDate?: string
 }
 
 export interface RunResult {
@@ -337,6 +345,19 @@ export interface RunResult {
   // When this changes for the SAME (model, seed) pair, the upstream model
   // weights have shifted and previously-reproducible runs no longer are.
   systemFingerprint?: string
+  // Echo of the date string injected into the system instruction (or
+  // undefined when the caller passed nothing).
+  injectedDate?: string
+}
+
+/**
+ * Build the system instruction we inject. Single source of truth so all
+ * three providers send the same anchor text. Kept minimal so it doesn't
+ * skew the model's tone or override its instructions.
+ */
+function buildSystemInstruction(injectedDate?: string): string | undefined {
+  if (!injectedDate) return undefined
+  return `Today's date is ${injectedDate}.`
 }
 
 // Common fetch options for every browser → provider API call.
@@ -389,6 +410,8 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       model: id,
       input: req.prompt,
     }
+    const sys = buildSystemInstruction(req.injectedDate)
+    if (sys) body.instructions = sys
     if (searchOn) body.tools = [{ type: 'web_search_preview' }]
     // max_output_tokens budget grows with reasoning depth so thinking
     // models don't truncate before producing the answer. Billed only
@@ -448,13 +471,18 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       seed: typeof req.seed === 'number' ? req.seed : undefined,
       systemFingerprint:
         typeof data.system_fingerprint === 'string' ? data.system_fingerprint : undefined,
+      injectedDate: req.injectedDate,
     }
   }
 
   // ── Legacy chat completions for models without web search ──────
+  const sysLegacy = buildSystemInstruction(req.injectedDate)
+  const messages: Array<{ role: string; content: string }> = []
+  if (sysLegacy) messages.push({ role: 'system', content: sysLegacy })
+  messages.push({ role: 'user', content: req.prompt })
   const body: Record<string, unknown> = {
     model: id,
-    messages: [{ role: 'user', content: req.prompt }],
+    messages,
     max_tokens: 1500,
     temperature: req.temperature ?? 1,
   }
@@ -495,6 +523,7 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
     seed: typeof req.seed === 'number' ? req.seed : undefined,
     systemFingerprint:
       typeof data.system_fingerprint === 'string' ? data.system_fingerprint : undefined,
+    injectedDate: req.injectedDate,
   }
 }
 
@@ -528,6 +557,8 @@ async function runAnthropic(req: RunRequest): Promise<RunResult> {
   } else {
     body.temperature = req.temperature ?? 1
   }
+  const sysAnthropic = buildSystemInstruction(req.injectedDate)
+  if (sysAnthropic) body.system = sysAnthropic
   if (searchOn) {
     body.tools = [{ type: 'web_search_20250305', name: 'web_search' }]
   }
@@ -584,6 +615,7 @@ async function runAnthropic(req: RunRequest): Promise<RunResult> {
     // here so callers see undefined and can act accordingly.
     seed: undefined,
     systemFingerprint: undefined,
+    injectedDate: req.injectedDate,
   }
 }
 
@@ -610,6 +642,10 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
   const body: Record<string, unknown> = {
     contents: [{ parts: [{ text: req.prompt }], role: 'user' }],
     generationConfig,
+  }
+  const sysGoogle = buildSystemInstruction(req.injectedDate)
+  if (sysGoogle) {
+    body.systemInstruction = { parts: [{ text: sysGoogle }] }
   }
   // Gemini grounding tool is only attached when both the model supports it
   // AND search is requested for this run. Skipping it makes Gemini answer
@@ -660,6 +696,7 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
     // Gemini does not return a stable per-call fingerprint for seeded
     // generations; modelVersion already covers the snapshot side.
     systemFingerprint: undefined,
+    injectedDate: req.injectedDate,
   }
 }
 

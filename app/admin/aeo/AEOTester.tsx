@@ -99,6 +99,8 @@ interface RunHistory {
   seed?: number
   /** Provider system fingerprint when returned (currently OpenAI only). */
   systemFingerprint?: string
+  /** YYYY-MM-DD date injected into the system instruction. */
+  injectedDate?: string
   durationMs: number
   citations?: string[]
   /**
@@ -120,6 +122,7 @@ interface BatchResult {
   reasoningMode?: ReasoningMode
   seed?: number
   systemFingerprint?: string
+  injectedDate?: string
   status: 'pending' | 'success' | 'error'
   text?: string
   mentions?: number
@@ -359,6 +362,11 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
   // (modelId, paraphraseIndex, trialIndex). Anthropic ignores the seed
   // either way — there's no documented seed parameter on Messages API.
   const [seedInput, setSeedInput] = useState<string>('')
+  // Injected date — every batch sends a "Today's date is YYYY-MM-DD" system
+  // instruction so all providers anchor on the same date instead of each
+  // hallucinating from its own training cutoff. Empty input → today's
+  // local date. Operators can freeze a specific date for replay testing.
+  const [injectedDateInput, setInjectedDateInput] = useState<string>('')
   // Drift detection: per-modelId snapshot fingerprint store. When a model's
   // snapshot changes between batches, fire a sticky alert so the operator
   // knows to re-baseline that model's trend data. Empty store = first run
@@ -509,6 +517,11 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
     const explicitSeed = trimmedSeed && !Number.isNaN(Number(trimmedSeed))
       ? Math.trunc(Number(trimmedSeed))
       : null
+    // Validated, lowercased YYYY-MM-DD or today's local date as fallback.
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/
+    const effectiveDate = dateRegex.test(injectedDateInput.trim())
+      ? injectedDateInput.trim()
+      : todayISO()
     const cells: Cell[] = []
     for (const { providerId, model } of availableModels) {
       let paraIdx = 0
@@ -563,6 +576,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               searchEnabled: c.searchEnabled,
               reasoningMode,
               seed: c.seed,
+              injectedDate: effectiveDate,
             }),
           })
           const r = await res.json()
@@ -594,6 +608,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
               seed: typeof r.seed === 'number' ? r.seed : c.seed,
               systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
+              injectedDate: typeof r.injectedDate === 'string' ? r.injectedDate : effectiveDate,
               costUsd: r.costUsd,
               durationMs: r.durationMs,
               citations: r.citations,
@@ -627,6 +642,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
             seed: typeof r.seed === 'number' ? r.seed : c.seed,
             systemFingerprint: typeof r.systemFingerprint === 'string' ? r.systemFingerprint : undefined,
+            injectedDate: typeof r.injectedDate === 'string' ? r.injectedDate : effectiveDate,
             durationMs: r.durationMs,
             citations: r.citations,
             citationDomains: citationsToDomains(r.citations),
@@ -655,6 +671,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             searchEnabled: c.searchEnabled,
             reasoningMode,
             seed: c.seed,
+            injectedDate: effectiveDate,
             durationMs: 0,
             error: msg,
           })
@@ -1160,6 +1177,37 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
                   Forwarded to OpenAI + Google. Anthropic doesn&apos;t expose a seed param —
                   identical re-runs there can still vary. Fingerprint drift on the same (model, seed)
                   pair will trigger a separate alert.
+                </p>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-white/5">
+                <label className="text-sm text-[color:var(--text-muted)] font-sans">
+                  Freeze date for this batch
+                  <span className="text-white/40 text-xs ml-2 font-sans">
+                    (default = today, {todayISO()})
+                  </span>
+                </label>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <input
+                    type="date"
+                    value={injectedDateInput}
+                    onChange={(e) => setInjectedDateInput(e.target.value)}
+                    className="bg-[color:var(--surface)] border border-[color:var(--border)] rounded-lg px-3 py-2 text-white text-[16px] font-mono"
+                  />
+                  {injectedDateInput && (
+                    <button
+                      type="button"
+                      onClick={() => setInjectedDateInput('')}
+                      className="text-xs text-white/60 hover:text-[#b4caff] font-sans px-3 py-2 rounded-lg border border-white/10 hover:border-[#b4caff]/40 transition-colors"
+                    >
+                      use today
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-white/60 font-sans mt-1">
+                  Sent as &quot;Today&apos;s date is YYYY-MM-DD&quot; in the system instruction across all
+                  three providers. Anchors model output so different training cutoffs don&apos;t
+                  diverge on date-sensitive answers.
                 </p>
               </div>
             </div>

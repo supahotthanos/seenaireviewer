@@ -23,6 +23,9 @@ const runSchema = z.object({
   reasoningMode: z.enum(['standard', 'extended', 'deep']).optional(),
   // 32-bit signed seed range. OpenAI + Google honor it; Anthropic ignores.
   seed: z.number().int().min(-2_147_483_648).max(2_147_483_647).optional(),
+  // YYYY-MM-DD anchor injected into the system instruction. Constrains the
+  // string to a strict format so models receive a consistent shape.
+  injectedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 })
 
 function getServerKey(providerId: ProviderId): string | null {
@@ -48,7 +51,16 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'Validation failed' }, { status: 400 })
   }
-  const { providerId, modelId, prompt, temperature, searchEnabled, reasoningMode, seed } = parsed.data
+  const {
+    providerId,
+    modelId,
+    prompt,
+    temperature,
+    searchEnabled,
+    reasoningMode,
+    seed,
+    injectedDate,
+  } = parsed.data
 
   const provider = PROVIDERS.find((p) => p.id === providerId)
   if (!provider) {
@@ -77,6 +89,7 @@ export async function POST(request: NextRequest) {
       searchEnabled,
       reasoningMode,
       seed,
+      injectedDate,
     })
     return NextResponse.json(result)
   } catch (err) {
