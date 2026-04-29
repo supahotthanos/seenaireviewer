@@ -9,10 +9,12 @@ import { Toast } from '@/components/ui/Toast'
 import { PROVIDERS, type ProviderId, type ModelConfig } from '@/lib/aeo-providers'
 import {
   buildHighlightRegex,
+  classifyAllMentions,
   countMentions,
   deriveAliases,
   extractRank,
   type RankFormat,
+  type Sentiment,
 } from '@/lib/aeo-mentions'
 
 interface ClientLite {
@@ -43,6 +45,13 @@ interface RunHistory {
   mentions: number
   /** Unique alias surface forms found in the response (e.g. "Lov MedSpa"). */
   mentionMatches?: string[]
+  /**
+   * One sentiment verdict per match (positional with mentionMatches' hits).
+   * Backward compat: missing on old entries → render as 'neutral'.
+   */
+  sentiment?: Sentiment[]
+  /** ±150-char context window around each match (positional with sentiment). */
+  sentimentContext?: string[]
   /** 1-indexed list position when a list structure was detected. */
   rank?: number | null
   /** Total items in the detected list (for "ranked #N of M" displays). */
@@ -67,6 +76,8 @@ interface BatchResult {
   text?: string
   mentions?: number
   mentionMatches?: string[]
+  sentiment?: Sentiment[]
+  sentimentContext?: string[]
   rank?: number | null
   rankTotal?: number | null
   rankFormat?: RankFormat
@@ -407,6 +418,9 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
           }
           const mentionResult = detectMentions(r.text)
           const rankResult = extractRank(r.text, mentionResult.matches)
+          // Per-hit sentiment classification (rule-based heuristic, see
+          // classifyMentionSentiment for details + v2 LLM TODO).
+          const { sentiments, contexts } = classifyAllMentions(r.text, mentionResult.hits)
           runningSpend += r.costUsd
 
           setBatch((prev) => {
@@ -417,6 +431,8 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               text: r.text,
               mentions: mentionResult.count,
               mentionMatches: mentionResult.matches,
+              sentiment: sentiments,
+              sentimentContext: contexts,
               rank: rankResult.rank,
               rankTotal: rankResult.totalItems,
               rankFormat: rankResult.format,
@@ -444,6 +460,8 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             costUsd: r.costUsd,
             mentions: mentionResult.count,
             mentionMatches: mentionResult.matches,
+            sentiment: sentiments,
+            sentimentContext: contexts,
             rank: rankResult.rank,
             rankTotal: rankResult.totalItems,
             rankFormat: rankResult.format,
@@ -1225,9 +1243,9 @@ function BatchPanel({
                           {renderHighlighted(c.text)}
                         </p>
                       )}
-                      {/* Show the exact spelling the model used. Helps you
-                          spot when the model writes "Lov MedSpa" vs the
-                          canonical "LovMedSpa", or invents a variant. */}
+                      {/* Show the exact spelling the model used + a sentiment
+                          chip per match. Hover the chip for the context
+                          window the classifier saw. */}
                       {c.status === 'success' && c.mentionMatches && c.mentionMatches.length > 0 && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs font-sans">
                           <span className="text-[#b4caff]/60 uppercase tracking-widest">
@@ -1241,6 +1259,39 @@ function BatchPanel({
                               {m}
                             </span>
                           ))}
+                          {c.sentiment && c.sentiment.length > 0 && (
+                            <>
+                              <span className="text-white/30 px-1">·</span>
+                              {c.sentiment.map((s, j) => {
+                                const ctx = c.sentimentContext?.[j] || ''
+                                const palette =
+                                  s === 'positive'
+                                    ? 'bg-emerald-400/15 text-emerald-300 border-emerald-400/30'
+                                    : s === 'negative'
+                                    ? 'bg-red-400/15 text-red-300 border-red-400/30'
+                                    : s === 'mixed'
+                                    ? 'bg-amber-300/15 text-amber-200 border-amber-300/30'
+                                    : 'bg-white/5 text-white/60 border-white/15'
+                                const glyph =
+                                  s === 'positive'
+                                    ? '✓'
+                                    : s === 'negative'
+                                    ? '✗'
+                                    : s === 'mixed'
+                                    ? '±'
+                                    : '−'
+                                return (
+                                  <span
+                                    key={`s-${j}`}
+                                    title={ctx ? `…${ctx}…` : `${s} mention`}
+                                    className={`px-1.5 py-0.5 rounded border ${palette}`}
+                                  >
+                                    {glyph} {s}
+                                  </span>
+                                )
+                              })}
+                            </>
+                          )}
                         </div>
                       )}
                       {c.status === 'success' && c.citations && c.citations.length > 0 && (
@@ -1303,6 +1354,26 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
   const totalMentions = scoped.reduce((s, h) => s + h.mentions, 0)
   const totalCost = scoped.reduce((s, h) => s + h.costUsd, 0)
   const mentionRate = successful > 0 ? Math.round((withMentions / successful) * 100) : 0
+
+  // Sentiment breakdown across ALL match positions in scoped runs. Old
+  // history entries without a sentiment array contribute their `mentions`
+  // count as 'neutral' (since the classifier wasn't run for them).
+  const sentimentTally = { positive: 0, neutral: 0, negative: 0, mixed: 0 }
+  for (const h of scoped) {
+    if (h.error) continue
+    if (Array.isArray(h.sentiment) && h.sentiment.length > 0) {
+      for (const s of h.sentiment) {
+        if (s === 'positive') sentimentTally.positive++
+        else if (s === 'negative') sentimentTally.negative++
+        else if (s === 'mixed') sentimentTally.mixed++
+        else sentimentTally.neutral++
+      }
+    } else if (h.mentions > 0) {
+      sentimentTally.neutral += h.mentions
+    }
+  }
+  const totalSentiment =
+    sentimentTally.positive + sentimentTally.neutral + sentimentTally.negative + sentimentTally.mixed
 
   // Mean rank when mentioned: average of rank values across runs where a
   // structural rank was actually detected (not all mentioned runs — only
@@ -1428,6 +1499,43 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
         />
       </div>
 
+      {totalSentiment > 0 && (
+        <div className="mb-5">
+          <p className="text-xs text-white/70 uppercase tracking-widest font-sans mb-2">
+            Sentiment breakdown · {totalSentiment} match{totalSentiment === 1 ? '' : 'es'}
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <SentimentTile
+              label="Positive"
+              count={sentimentTally.positive}
+              total={totalSentiment}
+              palette="bg-emerald-400/15 border-emerald-400/40 text-emerald-300"
+            />
+            <SentimentTile
+              label="Neutral"
+              count={sentimentTally.neutral}
+              total={totalSentiment}
+              palette="bg-white/5 border-white/15 text-white/70"
+            />
+            <SentimentTile
+              label="Negative"
+              count={sentimentTally.negative}
+              total={totalSentiment}
+              palette="bg-red-400/15 border-red-400/40 text-red-300"
+            />
+            <SentimentTile
+              label="Mixed"
+              count={sentimentTally.mixed}
+              total={totalSentiment}
+              palette="bg-amber-300/15 border-amber-300/40 text-amber-200"
+            />
+          </div>
+          <p className="text-[10px] text-white/40 font-sans mt-1">
+            Rule-based heuristic; old history entries without a verdict count as neutral.
+          </p>
+        </div>
+      )}
+
       <div className="mb-5">
         <p className="text-xs text-white/70 uppercase tracking-widest font-sans mb-2">
           Last 30 days · runs per day
@@ -1545,6 +1653,27 @@ function DashStat({ label, value, accent = false }: { label: string; value: stri
     <div className="bg-[#b4caff]/5 border border-[#b4caff]/15 rounded-xl p-3">
       <div className={`text-2xl font-serif ${accent ? 'text-[#b4caff]' : 'text-white'}`}>{value}</div>
       <div className="text-white/70 text-xs font-sans uppercase tracking-widest mt-0.5">{label}</div>
+    </div>
+  )
+}
+
+function SentimentTile({
+  label,
+  count,
+  total,
+  palette,
+}: {
+  label: string
+  count: number
+  total: number
+  palette: string
+}) {
+  const pct = total > 0 ? Math.round((count / total) * 100) : 0
+  return (
+    <div className={`rounded-xl border p-3 ${palette}`}>
+      <div className="text-2xl font-serif">{count}</div>
+      <div className="text-xs font-sans uppercase tracking-widest mt-0.5 opacity-80">{label}</div>
+      <div className="text-[10px] font-mono mt-0.5 opacity-60">{pct}%</div>
     </div>
   )
 }

@@ -21,6 +21,13 @@ export interface MentionResult {
   count: number
   /** Unique alias surface forms that actually matched in the text. */
   matches: string[]
+  /**
+   * One hit per non-overlapping match position. Carries the alias surface
+   * form actually matched plus the start char index in the ORIGINAL text
+   * (not the normalized text), so downstream analyzers like the sentiment
+   * classifier can grab a context window around each match.
+   */
+  hits: { surface: string; position: number }[]
 }
 
 /**
@@ -82,53 +89,57 @@ export function deriveAliases(canonical: string): string[] {
  * "LovMedSpa" inside the response doesn't get double-counted as "Lov" +
  * "LovMedSpa").
  *
- * Returns the count + the unique surface forms (canonical alias values,
- * not the normalized strings) that produced at least one match.
+ * Matches against the ORIGINAL text (case-insensitive) so each hit carries
+ * its original-text position — required by the sentiment classifier and
+ * any downstream consumer that needs to grab a context window around the
+ * match. Punctuation variants like "Lov-MedSpa" lose to this approach
+ * (the normalize-then-match path used to catch them); judgment call:
+ * deriveAliases already covers the high-frequency variants and operators
+ * can add the rare ones to the alias list.
+ *
+ * Returns count, the unique surface forms that matched, and a per-position
+ * hits array.
  */
 export function countMentions(text: string, aliases: string[]): MentionResult {
   if (!text || !aliases || aliases.length === 0) {
-    return { count: 0, matches: [] }
+    return { count: 0, matches: [], hits: [] }
   }
 
-  const normText = normalize(text)
-  if (!normText) return { count: 0, matches: [] }
+  const lowerText = text.toLowerCase()
 
-  type Hit = { start: number; end: number; alias: string }
-  const hits: Hit[] = []
+  type Raw = { start: number; end: number; alias: string }
+  const raw: Raw[] = []
 
   for (const alias of aliases) {
-    const normAlias = normalize(alias)
-    if (!normAlias) continue
-
+    const trimmed = (alias || '').trim()
+    if (!trimmed) continue
+    const lowerAlias = trimmed.toLowerCase()
     let pos = 0
-    while ((pos = normText.indexOf(normAlias, pos)) !== -1) {
+    while ((pos = lowerText.indexOf(lowerAlias, pos)) !== -1) {
       // Word-boundary-ish guard: don't match alias inside a longer word
-      // (so "spa" doesn't match inside "spahetti"). Apostrophe + digit + space
-      // count as boundaries.
-      const before = pos === 0 ? ' ' : normText[pos - 1]
-      const after = pos + normAlias.length >= normText.length ? ' ' : normText[pos + normAlias.length]
+      // (so "spa" doesn't match inside "spahetti"). Apostrophe + digit
+      // count as word chars; whitespace + punctuation are boundaries.
+      const before = pos === 0 ? ' ' : lowerText[pos - 1]
+      const after =
+        pos + lowerAlias.length >= lowerText.length ? ' ' : lowerText[pos + lowerAlias.length]
       const isWordChar = (ch: string) => /[a-z0-9']/.test(ch)
       if (!isWordChar(before) && !isWordChar(after)) {
-        hits.push({ start: pos, end: pos + normAlias.length, alias })
+        raw.push({ start: pos, end: pos + lowerAlias.length, alias: trimmed })
       }
-      pos += normAlias.length
+      pos += lowerAlias.length
     }
   }
 
-  if (hits.length === 0) return { count: 0, matches: [] }
+  if (raw.length === 0) return { count: 0, matches: [], hits: [] }
 
-  // Sort: ascending start, then descending length (so the longer alias at
-  // the same start position wins the dedupe pass below).
-  hits.sort((a, b) => a.start - b.start || b.end - a.end)
+  // Sort ascending start, descending length so longer-alias-at-same-start
+  // wins the dedupe pass.
+  raw.sort((a, b) => a.start - b.start || b.end - a.end)
 
-  const merged: Hit[] = []
-  for (const h of hits) {
+  const merged: Raw[] = []
+  for (const h of raw) {
     const last = merged[merged.length - 1]
-    if (last && h.start < last.end) {
-      // Overlaps with the last accepted hit — drop. (Because of the sort,
-      // the last accepted hit at this start is already the longest.)
-      continue
-    }
+    if (last && h.start < last.end) continue
     merged.push(h)
   }
 
@@ -138,6 +149,10 @@ export function countMentions(text: string, aliases: string[]): MentionResult {
   return {
     count: merged.length,
     matches: Array.from(matchSet),
+    hits: merged.map((h) => ({
+      surface: text.slice(h.start, h.end),
+      position: h.start,
+    })),
   }
 }
 
@@ -306,6 +321,137 @@ function detectProseOrdinals(text: string, aliasPositions: number[]): RankResult
   if (best === null) return null
   const totalItems = ordinals.reduce((max, o) => Math.max(max, o.value), 0)
   return { rank: best, totalItems, format: 'prose' }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Sentiment classification (rule-based)
+// ──────────────────────────────────────────────────────────────────────
+//
+// AEO mention rate alone is misleading: "avoid LovMedSpa" counts the same
+// as "LovMedSpa is excellent" today. classifyMentionSentiment looks at a
+// small window around each match and labels it with a coarse verdict so
+// the dashboard can show "47 mentions: 38 pos / 7 neut / 2 neg".
+//
+// TODO(v2): swap the rule-based scanner for a cheap LLM call (claude-haiku-4-5
+// or gpt-5.4-nano at ~$0.0001/call). Heuristics here trade recall for cost
+// + determinism — good enough for ranking signal, blind to sarcasm and
+// indirect criticism ("their pricing is interesting…").
+
+export type Sentiment = 'positive' | 'neutral' | 'negative' | 'mixed'
+
+/** Window radius in characters extracted around each match for analysis. */
+const SENTIMENT_WINDOW = 150
+
+const POSITIVE_CUES = [
+  'top-rated', 'top rated', 'best', 'recommended', 'highly recommend',
+  'highly recommended', 'highly', 'excellent', 'leading', 'premier',
+  'trusted', 'amazing', 'fantastic', 'great', 'professional', 'clean',
+  'friendly', 'expert', 'experts', 'reputable', 'renowned', 'acclaimed',
+  'award-winning', 'award winning', 'standout', 'outstanding', 'must-visit',
+  'must visit', 'go-to', 'go to', 'favorite', 'favourite', 'loved',
+  'beloved', 'popular', 'praised', 'beautiful', 'luxurious', 'caring',
+  'knowledgeable', 'attentive', 'skilled',
+]
+
+const NEGATIVE_CUES = [
+  'avoid', 'stay away', 'not recommended', 'do not recommend',
+  "don't recommend", "wouldn't recommend", 'complaints', 'complaint',
+  'lawsuit', 'overpriced', 'scam', 'warning', 'terrible', 'awful', 'bad',
+  'poor', 'disappointed', 'disappointing', 'rude', 'unprofessional',
+  'dirty', 'worst', 'shady', 'sketchy', 'horrible', 'rip-off', 'ripoff',
+  'misleading', 'fake', 'unsafe', 'botched', 'sued', 'controversial',
+  'unethical', 'unsanitary', 'unhygienic',
+]
+
+// Negation reversers — a positive cue inside one of these clauses flips
+// to negative. Cheap heuristic: if any reverser appears within ~25 chars
+// BEFORE a positive cue we treat the cue as negated.
+const NEGATION_REVERSERS = [
+  'not', "isn't", "aren't", "wasn't", "weren't", "doesn't", "don't",
+  "didn't", "won't", "wouldn't", "shouldn't", "can't", 'never', 'no',
+  'avoid', 'hardly', 'barely',
+]
+const NEGATION_LOOKBEHIND = 25
+
+function findCueAt(haystack: string, cue: string): number[] {
+  // Word-boundary match. Multi-word cues use a relaxed boundary on the
+  // outer edges only (interior whitespace is preserved as-is).
+  const escaped = cue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`(?:^|[^a-z0-9'])${escaped}(?:$|[^a-z0-9'])`, 'gi')
+  const positions: number[] = []
+  let m: RegExpExecArray | null
+  while ((m = pattern.exec(haystack)) !== null) {
+    positions.push(m.index + (m[0].toLowerCase().startsWith(cue.toLowerCase()) ? 0 : 1))
+    // Avoid zero-length match infinite loop
+    if (m.index === pattern.lastIndex) pattern.lastIndex++
+  }
+  return positions
+}
+
+/**
+ * Classify sentiment around a single match position.
+ *   - positive: positive cues fire and no negation reversers precede them
+ *   - negative: negative cues fire OR a positive cue is preceded by negation
+ *   - neutral: nothing fires
+ *   - mixed: both sides fire independently
+ */
+export function classifyMentionSentiment(
+  text: string,
+  matchPosition: number,
+  windowChars: number = SENTIMENT_WINDOW
+): { sentiment: Sentiment; context: string } {
+  if (!text || matchPosition < 0) return { sentiment: 'neutral', context: '' }
+  const start = Math.max(0, matchPosition - windowChars)
+  const end = Math.min(text.length, matchPosition + windowChars)
+  const window = text.slice(start, end)
+  const lower = window.toLowerCase()
+
+  let posScore = 0
+  let negScore = 0
+
+  for (const cue of POSITIVE_CUES) {
+    const hits = findCueAt(lower, cue)
+    for (const at of hits) {
+      // Negation lookbehind: scan ~25 chars before the cue for any reverser.
+      const lbStart = Math.max(0, at - NEGATION_LOOKBEHIND)
+      const lookbehind = lower.slice(lbStart, at)
+      const negated = NEGATION_REVERSERS.some((r) =>
+        new RegExp(`(?:^|[^a-z0-9'])${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:$|[^a-z0-9'])`).test(
+          lookbehind
+        )
+      )
+      if (negated) negScore++
+      else posScore++
+    }
+  }
+  for (const cue of NEGATIVE_CUES) {
+    if (findCueAt(lower, cue).length > 0) negScore++
+  }
+
+  let sentiment: Sentiment = 'neutral'
+  if (posScore > 0 && negScore > 0) sentiment = 'mixed'
+  else if (posScore > 0) sentiment = 'positive'
+  else if (negScore > 0) sentiment = 'negative'
+
+  return { sentiment, context: window.trim() }
+}
+
+/**
+ * Run the classifier across every hit returned by countMentions. Result
+ * arrays are positional (index N is the verdict + context for hit N).
+ */
+export function classifyAllMentions(
+  text: string,
+  hits: { position: number }[]
+): { sentiments: Sentiment[]; contexts: string[] } {
+  const sentiments: Sentiment[] = []
+  const contexts: string[] = []
+  for (const h of hits) {
+    const r = classifyMentionSentiment(text, h.position)
+    sentiments.push(r.sentiment)
+    contexts.push(r.context)
+  }
+  return { sentiments, contexts }
 }
 
 /**

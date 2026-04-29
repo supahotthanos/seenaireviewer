@@ -5,7 +5,14 @@
 // Each case feeds a representative LLM-style response into extractRank +
 // countMentions and prints a compact PASS/FAIL line.
 
-import { countMentions, extractRank, deriveAliases } from './aeo-mentions'
+import {
+  countMentions,
+  extractRank,
+  deriveAliases,
+  classifyMentionSentiment,
+  classifyAllMentions,
+  type Sentiment,
+} from './aeo-mentions'
 
 interface Case {
   name: string
@@ -118,6 +125,16 @@ Here is the official ranking:
     aliases: ALIASES,
     expect: { mentions: 2, rank: 2, totalItems: 3, format: 'numbered' },
   },
+  {
+    // Edge case: a sentence-leading "1." should NOT be parsed as a list
+    // when there's no second item. Heuristic: detector requires ≥2 items.
+    name: 'mid-sentence "1." is not a list',
+    text:
+      'Many med spas operate in Brooklyn. 1. LovMedSpa is one option that ' +
+      'comes up frequently in conversations among locals.',
+    aliases: ALIASES,
+    expect: { mentions: 1, rank: null, totalItems: null, format: 'prose' },
+  },
 ]
 
 function runTests() {
@@ -164,3 +181,104 @@ function runTests() {
 }
 
 runTests()
+
+// ──────────────────────────────────────────────────────────────────────
+// Sentiment classifier tests
+// ──────────────────────────────────────────────────────────────────────
+interface SentimentCase {
+  name: string
+  text: string
+  expect: Sentiment
+}
+
+const SENTIMENT_CASES: SentimentCase[] = [
+  {
+    name: 'top-rated → positive',
+    text: 'LovMedSpa is the top-rated medspa in Brooklyn for Botox.',
+    expect: 'positive',
+  },
+  {
+    name: 'avoid → negative',
+    text: 'Avoid LovMedSpa — multiple complaints about pricing and rude staff.',
+    expect: 'negative',
+  },
+  {
+    name: '"not recommended" → negative',
+    text: 'LovMedSpa is not recommended for first-time clients.',
+    expect: 'negative',
+  },
+  {
+    name: 'mixed signals → mixed',
+    text:
+      'LovMedSpa has excellent injectors but the front desk is rude and the ' +
+      'whole place feels overpriced for what you get.',
+    expect: 'mixed',
+  },
+  {
+    name: 'plain factual → neutral',
+    text: 'LovMedSpa opened in Brooklyn and offers a range of treatments.',
+    expect: 'neutral',
+  },
+  {
+    name: 'praise word but negated → negative',
+    text: 'LovMedSpa is not great — clinic feels rushed and impersonal.',
+    expect: 'negative',
+  },
+]
+
+function runSentimentTests() {
+  console.log()
+  let pass = 0
+  const fails: string[] = []
+  for (const c of SENTIMENT_CASES) {
+    const aliases = deriveAliases('LovMedSpa')
+    const m = countMentions(c.text, aliases)
+    if (m.hits.length === 0) {
+      fails.push(`✗ ${c.name} — no alias hit found, can't classify`)
+      console.log(`  ✗ ${c.name} (no hit)`)
+      continue
+    }
+    const { sentiment } = classifyMentionSentiment(c.text, m.hits[0].position)
+    if (sentiment === c.expect) {
+      pass++
+      console.log(`  ✓ ${c.name}`)
+    } else {
+      fails.push(`✗ ${c.name} — expected ${c.expect}, got ${sentiment}`)
+      console.log(`  ✗ ${c.name} — expected ${c.expect}, got ${sentiment}`)
+    }
+  }
+
+  // classifyAllMentions sanity: well-separated mentions get positional
+  // verdicts. Adjacent mentions inside one 150-char window will leak
+  // (and correctly report 'mixed') — that's by design, not a bug.
+  const dual =
+    'LovMedSpa is excellent for Botox and their injectors are highly skilled. ' +
+    // 250+ chars of neutral filler so the next match's window doesn't
+    // pick up the positive cues above.
+    'Many med spas in the borough offer similar services and clients often ' +
+    'compare options across multiple consultations before booking. Some ' +
+    'practices specialize in laser, others lean injectables. ' +
+    'Avoid LovMedSpa for laser — they burned a friend of mine and the ' +
+    'follow-up was awful.'
+  const aliases = deriveAliases('LovMedSpa')
+  const dualHits = countMentions(dual, aliases).hits
+  const { sentiments } = classifyAllMentions(dual, dualHits)
+  if (sentiments.length === 2 && sentiments[0] === 'positive' && sentiments[1] === 'negative') {
+    pass++
+    console.log(`  ✓ classifyAllMentions: positional pos+neg`)
+  } else {
+    fails.push(`✗ classifyAllMentions returned ${JSON.stringify(sentiments)}`)
+    console.log(`  ✗ classifyAllMentions returned ${JSON.stringify(sentiments)}`)
+  }
+
+  const total = SENTIMENT_CASES.length + 1
+  console.log()
+  console.log(`  ${pass}/${total} sentiment passed`)
+  if (fails.length > 0) {
+    console.log()
+    console.log(fails.join('\n'))
+    process.exit(1)
+  }
+}
+
+runSentimentTests()
