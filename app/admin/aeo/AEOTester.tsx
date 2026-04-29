@@ -28,6 +28,39 @@ interface ClientLite {
 /** UI-level toggle deciding whether the batch fires with web search on, off, or both. */
 type SearchMode = 'on' | 'off' | 'compare'
 
+/**
+ * Extract a registrable-ish domain from a citation URL. Strips the scheme,
+ * port, "www." prefix, path, and query — keeps only the registered host so
+ * "https://www.yelp.com/biz/lovmedspa-brooklyn?utm=…" becomes "yelp.com".
+ * Returns null when the input is malformed (skip the citation rather than
+ * lying about its source).
+ */
+function extractCitationDomain(url: string): string | null {
+  if (!url || typeof url !== 'string') return null
+  try {
+    const u = new URL(url.trim())
+    let host = u.hostname.toLowerCase()
+    if (host.startsWith('www.')) host = host.slice(4)
+    return host || null
+  } catch {
+    return null
+  }
+}
+
+/** Map a list of citation URLs to a deduped, ordered list of domains. */
+function citationsToDomains(citations: string[] | undefined): string[] {
+  if (!citations || citations.length === 0) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const url of citations) {
+    const d = extractCitationDomain(url)
+    if (!d || seen.has(d)) continue
+    seen.add(d)
+    out.push(d)
+  }
+  return out
+}
+
 interface RunHistory {
   id: string
   ts: number
@@ -62,6 +95,12 @@ interface RunHistory {
   searchEnabled: boolean
   durationMs: number
   citations?: string[]
+  /**
+   * Deduped registrable domains derived from `citations`. Stored separately
+   * so the dashboard can aggregate without re-parsing URLs every render.
+   * Backward compat: missing on old entries → derive on read or render [].
+   */
+  citationDomains?: string[]
   error?: string
 }
 
@@ -468,6 +507,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             searchEnabled: c.searchEnabled,
             durationMs: r.durationMs,
             citations: r.citations,
+            citationDomains: citationsToDomains(r.citations),
           })
         } catch (err) {
           const msg = err instanceof Error ? err.message : 'Run failed'
@@ -1413,6 +1453,45 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
     }))
     .sort((a, b) => b.rate - a.rate || b.runs - a.runs)
 
+  // Citation source breakdown: per domain, how many runs cited it across
+  // each provider. Old history entries without citationDomains are
+  // derived on-the-fly from `citations` so they still contribute.
+  // Also tracks a separate "mentioned-only" count so we can answer "what
+  // sources matter when the client is actually mentioned?".
+  type DomainStat = {
+    domain: string
+    total: number
+    mentionedRuns: number
+    byProvider: Record<ProviderId, number>
+  }
+  const domainMap = new Map<string, DomainStat>()
+  for (const h of scoped) {
+    if (h.error) continue
+    const domains =
+      Array.isArray(h.citationDomains) && h.citationDomains.length > 0
+        ? h.citationDomains
+        : citationsToDomains(h.citations)
+    if (domains.length === 0) continue
+    const isMentioned = h.mentions > 0
+    for (const d of domains) {
+      let stat = domainMap.get(d)
+      if (!stat) {
+        stat = { domain: d, total: 0, mentionedRuns: 0, byProvider: { openai: 0, google: 0, anthropic: 0 } }
+        domainMap.set(d, stat)
+      }
+      stat.total++
+      if (isMentioned) stat.mentionedRuns++
+      stat.byProvider[h.providerId]++
+    }
+  }
+  const domainRows = Array.from(domainMap.values())
+    .sort((a, b) => b.total - a.total || a.domain.localeCompare(b.domain))
+    .slice(0, 20)
+  const mentionDomainRows = Array.from(domainMap.values())
+    .filter((d) => d.mentionedRuns > 0)
+    .sort((a, b) => b.mentionedRuns - a.mentionedRuns || a.domain.localeCompare(b.domain))
+    .slice(0, 12)
+
   const byCity = new Map<string, { runs: number; mentions: number }>()
   for (const h of history) {
     if (h.error) continue
@@ -1600,6 +1679,79 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {domainRows.length > 0 && (
+        <div className="mb-5">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <p className="text-xs text-white/70 uppercase tracking-widest font-sans">
+              Citation source breakdown · top {domainRows.length}
+            </p>
+            <p className="text-[10px] text-white/50 uppercase tracking-widest font-sans">
+              by provider
+            </p>
+          </div>
+          <div className="divide-y divide-white/5">
+            {domainRows.map((d) => {
+              const max = domainRows[0].total
+              return (
+                <div key={d.domain} className="py-2 grid grid-cols-12 gap-3 items-center text-sm font-sans">
+                  <span className="col-span-4 text-white truncate font-mono text-xs">
+                    {d.domain}
+                  </span>
+                  <div className="col-span-4 h-2 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className="h-full bg-[#b4caff] rounded-full"
+                      style={{ width: `${Math.round((d.total / max) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="col-span-1 text-[#b4caff] text-right font-mono text-xs">
+                    {d.total}
+                  </span>
+                  <span className="col-span-3 text-right text-[10px] font-mono text-white/60">
+                    {d.byProvider.openai > 0 && (
+                      <span title="OpenAI" className="text-emerald-300/80 mr-1">
+                        oai {d.byProvider.openai}
+                      </span>
+                    )}
+                    {d.byProvider.anthropic > 0 && (
+                      <span title="Anthropic" className="text-amber-200/80 mr-1">
+                        ant {d.byProvider.anthropic}
+                      </span>
+                    )}
+                    {d.byProvider.google > 0 && (
+                      <span title="Google" className="text-sky-300/80">
+                        ggl {d.byProvider.google}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          {mentionDomainRows.length > 0 && (
+            <details className="mt-3">
+              <summary className="text-xs text-[#b4caff]/80 hover:text-[#b4caff] cursor-pointer font-sans select-none transition-colors">
+                Domains cited when client was mentioned ({mentionDomainRows.length}) ↓
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {mentionDomainRows.map((d) => (
+                  <span
+                    key={`mc-${d.domain}`}
+                    className="text-xs font-mono bg-emerald-400/10 border border-emerald-400/30 text-emerald-300 px-2 py-0.5 rounded"
+                    title={`${d.mentionedRuns} mentioned-runs cited ${d.domain}`}
+                  >
+                    {d.domain} <span className="text-emerald-300/60">{d.mentionedRuns}</span>
+                  </span>
+                ))}
+              </div>
+              <p className="text-[10px] text-white/40 font-sans mt-1">
+                Helpful for prioritizing PR / SEO work — these are the sources
+                the AI actually pulled when surfacing your client.
+              </p>
+            </details>
+          )}
         </div>
       )}
 
