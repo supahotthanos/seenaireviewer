@@ -6,7 +6,7 @@ import { GlassCard } from '@/components/ui/GlassCard'
 import { GlassButton } from '@/components/ui/GlassButton'
 import { GlassInput } from '@/components/ui/GlassInput'
 import { Toast } from '@/components/ui/Toast'
-import { PROVIDERS, type ProviderId, type ModelConfig } from '@/lib/aeo-providers'
+import { PROVIDERS, type ProviderId, type ModelConfig, type ReasoningMode } from '@/lib/aeo-providers'
 import {
   buildHighlightRegex,
   classifyAllMentions,
@@ -93,6 +93,8 @@ interface RunHistory {
   rankFormat?: RankFormat
   /** True if this run used the provider's web-search tool. */
   searchEnabled: boolean
+  /** Reasoning depth used for this call ('standard' on old entries). */
+  reasoningMode?: ReasoningMode
   durationMs: number
   citations?: string[]
   /**
@@ -111,6 +113,7 @@ interface BatchResult {
   trialIndex: number // which trial within (model, paraphrase) cell
   /** Whether this cell fired with the provider's web-search tool attached. */
   searchEnabled: boolean
+  reasoningMode?: ReasoningMode
   status: 'pending' | 'success' | 'error'
   text?: string
   mentions?: number
@@ -227,7 +230,8 @@ function estimateBatchCost(
   models: { providerId: ProviderId; model: ModelConfig }[],
   trials: number,
   paraphrases: number,
-  searchMode: SearchMode
+  searchMode: SearchMode,
+  reasoningMode: ReasoningMode
 ): number {
   // Web search adds a flat per-call fee on OpenAI ($0.025) and Anthropic
   // ($0.01); Gemini bundles it in tokens. We approximate with average
@@ -236,11 +240,17 @@ function estimateBatchCost(
   //   - 'on'      → every call has search (+ surcharge)
   //   - 'off'     → no calls have search (no surcharge)
   //   - 'compare' → 2× calls; only the search-on half pays the surcharge
+  // Reasoning mode pads output tokens proportionally (extended ~2-3×
+  // standard, deep ~10-30×). These are coarse — actual deep-research
+  // costs vary by provider and depth of multi-step orchestration.
+  const reasoningOutputMult =
+    reasoningMode === 'deep' ? 18 : reasoningMode === 'extended' ? 2.5 : 1
   let total = 0
   const baseCalls = trials * paraphrases
   for (const { providerId, model } of models) {
     const tokensPerCall =
-      (30 * model.priceIn) / 1_000_000 + (400 * model.priceOut) / 1_000_000
+      (30 * model.priceIn) / 1_000_000 +
+      (400 * reasoningOutputMult * model.priceOut) / 1_000_000
     const searchSurcharge =
       providerId === 'openai' ? 0.025 : providerId === 'anthropic' ? 0.01 : 0
     if (searchMode === 'on') {
@@ -287,6 +297,9 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
   // 'compare' (fire each cell twice — once with search, once without — so
   // we can see the gap between live ranking and trained brand awareness).
   const [searchMode, setSearchMode] = useState<SearchMode>('on')
+  // Reasoning depth — see ReasoningMode in lib/aeo-providers. 'deep' can
+  // 10–50× the bill so we gate the run with a confirmation dialog.
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>('standard')
   // Drift detection: per-modelId snapshot fingerprint store. When a model's
   // snapshot changes between batches, fire a sticky alert so the operator
   // knows to re-baseline that model's trend data. Empty store = first run
@@ -360,8 +373,8 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
   }, [serverKeys])
 
   const estimatedCost = useMemo(
-    () => estimateBatchCost(availableModels, trials, paraphraseCount, searchMode),
-    [availableModels, trials, paraphraseCount, searchMode]
+    () => estimateBatchCost(availableModels, trials, paraphraseCount, searchMode, reasoningMode),
+    [availableModels, trials, paraphraseCount, searchMode, reasoningMode]
   )
   // Compare mode doubles the call count (one search-on + one search-off per cell).
   const searchModeMultiplier = searchMode === 'compare' ? 2 : 1
@@ -393,6 +406,17 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
     if (overBudget) {
       setToast({ message: 'Daily spend cap reached', type: 'error' })
       return
+    }
+    // Deep research can balloon to 10-50× standard. Force an explicit
+    // confirmation before sending — easy to misclick this toggle.
+    if (reasoningMode === 'deep') {
+      const ok = window.confirm(
+        `Deep research mode is selected.\n\n` +
+          `This will use deep-research model variants where available and burn 10-50× ` +
+          `more tokens than standard mode. Estimated cost: $${estimatedCost.toFixed(3)}.\n\n` +
+          `Run anyway?`
+      )
+      if (!ok) return
     }
 
     const batchId = crypto.randomUUID()
@@ -429,6 +453,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
       prompt: c.prompt,
       trialIndex: c.trialIndex,
       searchEnabled: c.searchEnabled,
+      reasoningMode,
       status: 'pending',
     }))
     setBatch(initial)
@@ -449,6 +474,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               prompt: c.prompt,
               temperature,
               searchEnabled: c.searchEnabled,
+              reasoningMode,
             }),
           })
           const r = await res.json()
@@ -475,6 +501,9 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
               rank: rankResult.rank,
               rankTotal: rankResult.totalItems,
               rankFormat: rankResult.format,
+              // Server echoes the EFFECTIVE mode (e.g. 'deep' downgrades
+              // to 'extended' on models without a deep variant).
+              reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
               costUsd: r.costUsd,
               durationMs: r.durationMs,
               citations: r.citations,
@@ -505,6 +534,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             rankTotal: rankResult.totalItems,
             rankFormat: rankResult.format,
             searchEnabled: c.searchEnabled,
+            reasoningMode: (r.reasoningMode as ReasoningMode | undefined) ?? reasoningMode,
             durationMs: r.durationMs,
             citations: r.citations,
             citationDomains: citationsToDomains(r.citations),
@@ -531,6 +561,7 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             costUsd: 0,
             mentions: 0,
             searchEnabled: c.searchEnabled,
+            reasoningMode,
             durationMs: 0,
             error: msg,
           })
@@ -903,6 +934,60 @@ export default function AEOTester({ clients }: { clients: ClientLite[] }) {
             </p>
           </div>
 
+          <details>
+            <summary className="text-sm text-[color:var(--text-muted)] cursor-pointer font-sans select-none hover:text-[#b4caff] transition-colors">
+              Advanced — reasoning depth
+              <span className="text-[#b4caff] font-mono ml-2">
+                {reasoningMode === 'standard' ? 'standard' : reasoningMode === 'extended' ? 'extended' : 'DEEP'}
+              </span>
+            </summary>
+            <div className="mt-3">
+              <div role="radiogroup" aria-label="Reasoning depth" className="grid grid-cols-3 gap-2">
+                {([
+                  { id: 'standard', label: 'Standard', sub: 'normal budgets' },
+                  { id: 'extended', label: 'Extended thinking', sub: '~2-3× cost' },
+                  { id: 'deep', label: 'Deep research', sub: '10-50× cost' },
+                ] as { id: ReasoningMode; label: string; sub: string }[]).map((opt) => {
+                  const active = reasoningMode === opt.id
+                  const danger = opt.id === 'deep'
+                  return (
+                    <button
+                      key={opt.id}
+                      role="radio"
+                      aria-checked={active}
+                      type="button"
+                      onClick={() => setReasoningMode(opt.id)}
+                      className={`
+                        px-3 py-2 text-sm font-sans rounded-lg border text-left transition-colors
+                        ${active && danger
+                          ? 'bg-red-400/15 text-red-200 border-red-400/60'
+                          : active
+                          ? 'bg-[#b4caff]/20 text-[#b4caff] border-[#b4caff]/60'
+                          : 'bg-white/5 text-white/70 border-white/10 hover:border-[#b4caff]/40'}
+                      `}
+                    >
+                      <div className="font-medium">{opt.label}</div>
+                      <div className={`text-[10px] uppercase tracking-widest ${active && danger ? 'text-red-200/80' : 'text-white/50'}`}>
+                        {opt.sub}
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="text-xs text-white/60 font-sans mt-2">
+                Extended adds Anthropic <code className="text-[#b4caff]/80 bg-black/20 px-1 rounded">thinking</code> +
+                Gemini <code className="text-[#b4caff]/80 bg-black/20 px-1 rounded">thinkingConfig</code> +
+                higher OpenAI token budgets. Deep routes OpenAI o3/o4-mini to their <code className="text-[#b4caff]/80 bg-black/20 px-1 rounded">-deep-research</code> variants
+                where available; you&apos;ll be asked to confirm before sending. Models without a deep variant fall back to extended.
+              </p>
+              {reasoningMode === 'deep' && (
+                <p className="text-xs text-red-300 font-sans mt-2">
+                  ⚠️ Deep research multiplies cost. Estimate above already includes the multiplier.
+                </p>
+              )}
+            </div>
+          </details>
+
           <div>
             <div className="flex items-center justify-between gap-3 mb-1.5">
               <label className="text-sm text-[color:var(--text-muted)] font-sans">
@@ -1252,6 +1337,18 @@ function BatchPanel({
                           >
                             {c.searchEnabled ? '🌐 on' : '💭 off'}
                           </span>
+                          {c.reasoningMode && c.reasoningMode !== 'standard' && (
+                            <span
+                              title={`reasoning depth: ${c.reasoningMode}`}
+                              className={`shrink-0 px-1.5 py-0.5 rounded font-mono text-[10px] uppercase tracking-widest border ${
+                                c.reasoningMode === 'deep'
+                                  ? 'bg-red-400/15 text-red-300 border-red-400/30'
+                                  : 'bg-purple-300/15 text-purple-200 border-purple-300/30'
+                              }`}
+                            >
+                              {c.reasoningMode === 'deep' ? '🧠 deep' : '🧠 ext'}
+                            </span>
+                          )}
                           <span className="truncate">Trial {c.trialIndex + 1} · {c.prompt}</span>
                           {c.status === 'success' && c.rank != null && (
                             <span
@@ -1361,10 +1458,12 @@ function BatchPanel({
 }
 
 type SearchFilter = 'all' | 'on' | 'off'
+type ReasoningFilter = 'all' | ReasoningMode
 
 function DashboardSection({ history }: { history: RunHistory[] }) {
   const [cityFilter, setCityFilter] = useState<string>('all')
   const [searchFilter, setSearchFilter] = useState<SearchFilter>('all')
+  const [reasoningFilter, setReasoningFilter] = useState<ReasoningFilter>('all')
 
   const cities = useMemo(() => {
     const set = new Set<string>()
@@ -1378,14 +1477,26 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
   const hasOn = useMemo(() => history.some((h) => h.searchEnabled === true), [history])
   const hasOff = useMemo(() => history.some((h) => h.searchEnabled === false), [history])
   const hasBothModes = hasOn && hasOff
+  // Surface the reasoning filter only when at least one extended/deep run
+  // exists in history — otherwise it's just dead UI cluttering the header.
+  const hasNonStandardReasoning = useMemo(
+    () =>
+      history.some(
+        (h) => h.reasoningMode && h.reasoningMode !== 'standard'
+      ),
+    [history]
+  )
 
   const scoped = useMemo(() => {
     let next = history
     if (cityFilter !== 'all') next = next.filter((h) => h.city === cityFilter)
     if (searchFilter === 'on') next = next.filter((h) => h.searchEnabled === true)
     else if (searchFilter === 'off') next = next.filter((h) => h.searchEnabled === false)
+    if (reasoningFilter !== 'all') {
+      next = next.filter((h) => (h.reasoningMode ?? 'standard') === reasoningFilter)
+    }
     return next
-  }, [history, cityFilter, searchFilter])
+  }, [history, cityFilter, searchFilter, reasoningFilter])
 
   const total = scoped.length
   const errors = scoped.filter((h) => h.error).length
@@ -1530,6 +1641,40 @@ function DashboardSection({ history }: { history: RunHistory[] }) {
                       }`}
                     >
                       {opt === 'all' ? 'All' : opt === 'on' ? 'On' : 'Off'}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+          {hasNonStandardReasoning && (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-sans text-white/70 uppercase tracking-widest">Reasoning</label>
+              <div role="radiogroup" aria-label="Reasoning-mode filter" className="flex rounded-lg border border-[color:var(--border)] overflow-hidden">
+                {(['all', 'standard', 'extended', 'deep'] as ReasoningFilter[]).map((opt) => {
+                  const active = reasoningFilter === opt
+                  const labels: Record<ReasoningFilter, string> = {
+                    all: 'All',
+                    standard: 'Std',
+                    extended: 'Ext',
+                    deep: 'Deep',
+                  }
+                  return (
+                    <button
+                      key={opt}
+                      role="radio"
+                      aria-checked={active}
+                      type="button"
+                      onClick={() => setReasoningFilter(opt)}
+                      className={`px-3 py-1.5 text-xs font-sans uppercase tracking-widest transition-colors ${
+                        active
+                          ? opt === 'deep'
+                            ? 'bg-red-400/20 text-red-200'
+                            : 'bg-[#b4caff]/20 text-[#b4caff]'
+                          : 'bg-[color:var(--surface)] text-white/60 hover:text-[#b4caff]'
+                      }`}
+                    >
+                      {labels[opt]}
                     </button>
                   )
                 })}

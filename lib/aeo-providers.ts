@@ -254,6 +254,32 @@ export const PROVIDERS: ProviderConfig[] = [
   },
 ]
 
+/**
+ * Reasoning depth selector. Maps to provider-specific knobs:
+ *   - standard: today's behavior — no extended thinking, normal token budgets
+ *   - extended: enable provider thinking budgets where supported (Claude
+ *     opus/sonnet via thinking block; Gemini 3.x via thinkingConfig); on
+ *     OpenAI reasoning models, bumps max_output_tokens for headroom
+ *   - deep: route to deep-research model variants where available
+ *     (OpenAI o3/o4 deep-research IDs); otherwise behave like extended.
+ *     Cost is 10–50× standard — UI gates this behind a confirmation.
+ */
+export type ReasoningMode = 'standard' | 'extended' | 'deep'
+
+/**
+ * Map of base OpenAI model id → deep-research variant id used when
+ * reasoningMode === 'deep'. These variants live behind the same Responses
+ * API but include the orchestration that runs multi-step research with
+ * the web_search_preview tool. Cost is roughly 10–30× the base model.
+ * IDs current as of 2026-04; if OpenAI rotates them, only this map needs
+ * updating. Models not listed fall back to the base id with extended-mode
+ * token headroom (still useful for an A/B but not "true" deep research).
+ */
+const DEEP_RESEARCH_OPENAI_MAP: Record<string, string> = {
+  o3: 'o3-deep-research-2025-06-26',
+  'o4-mini': 'o4-mini-deep-research-2025-06-26',
+}
+
 export interface RunRequest {
   providerId: ProviderId
   model: ModelConfig
@@ -267,6 +293,11 @@ export interface RunRequest {
   // we attach the provider's web-search tool (default = current behavior).
   // Useful for separating "trained brand awareness" from "live ranking".
   searchEnabled?: boolean
+  /**
+   * Reasoning depth knob. Defaults to 'standard' (current behavior).
+   * 'deep' is cost-inflating — callers should confirm with the user first.
+   */
+  reasoningMode?: ReasoningMode
 }
 
 export interface RunResult {
@@ -284,6 +315,10 @@ export interface RunResult {
   // call. Lets clients tag history entries straight from the response
   // without having to thread their own flag through.
   searchEnabled: boolean
+  // Echo of which reasoning mode the runner actually used. May differ
+  // from the request when 'deep' falls back to 'extended' on a model
+  // without a deep-research variant.
+  reasoningMode: ReasoningMode
 }
 
 // Common fetch options for every browser → provider API call.
@@ -310,8 +345,16 @@ const OPENAI_NO_WEB_SEARCH = new Set(['gpt-3.5-turbo'])
 
 async function runOpenAI(req: RunRequest): Promise<RunResult> {
   const start = Date.now()
-  const id = req.model.id
-  const isReasoning = /^o\d/i.test(id) // o1, o1-mini, o3, o3-mini, o4-mini
+  const baseId = req.model.id
+  const reasoning: ReasoningMode = req.reasoningMode ?? 'standard'
+  // Deep research routes through dedicated model variants; if no variant
+  // exists for this base model, we fall back to extended-thinking-style
+  // behavior on the base id (still useful, just not "true" deep research).
+  const deepVariant = reasoning === 'deep' ? DEEP_RESEARCH_OPENAI_MAP[baseId] : undefined
+  const id = deepVariant ?? baseId
+  const effectiveReasoning: ReasoningMode =
+    reasoning === 'deep' && !deepVariant ? 'extended' : reasoning
+  const isReasoning = /^o\d/i.test(id) // o1, o1-mini, o3, o3-mini, o4-mini, deep variants
   // GPT-5 (original) and GPT-5.5 lock temperature to default (1) — same
   // as reasoning models. GPT-5.4 family allows custom temperatures.
   const isLockedTemp = isReasoning || /^gpt-5(\.5)?$/i.test(id)
@@ -329,9 +372,13 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       input: req.prompt,
     }
     if (searchOn) body.tools = [{ type: 'web_search_preview' }]
-    // max_output_tokens: enough for the answer + reasoning headroom for
-    // thinking-style models. Billed only for tokens actually used.
-    body.max_output_tokens = isLockedTemp ? 4000 : 1500
+    // max_output_tokens budget grows with reasoning depth so thinking
+    // models don't truncate before producing the answer. Billed only
+    // for tokens actually used, so headroom is cheap when unused.
+    const baseBudget = isLockedTemp ? 4000 : 1500
+    const reasoningMultiplier =
+      effectiveReasoning === 'deep' ? 6 : effectiveReasoning === 'extended' ? 2 : 1
+    body.max_output_tokens = baseBudget * reasoningMultiplier
     if (!isLockedTemp) body.temperature = req.temperature ?? 1
 
     const res = await fetch('https://api.openai.com/v1/responses', {
@@ -378,6 +425,7 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
       // OpenAI Responses API echoes the resolved model snapshot
       modelSnapshot: typeof data.model === 'string' ? data.model : undefined,
       searchEnabled: searchOn,
+      reasoningMode: effectiveReasoning,
     }
   }
 
@@ -418,6 +466,9 @@ async function runOpenAI(req: RunRequest): Promise<RunResult> {
     // Legacy chat-completions branch never attaches a search tool —
     // these are search-incapable models that fall through to here.
     searchEnabled: false,
+    // Legacy chat completions has no reasoning knob; always 'standard'
+    // regardless of what the caller requested.
+    reasoningMode: 'standard',
   }
 }
 
@@ -428,11 +479,28 @@ async function runAnthropic(req: RunRequest): Promise<RunResult> {
   // When searchEnabled is explicitly false we omit the tools array entirely
   // so Claude answers from training data only.
   const searchOn = req.searchEnabled !== false
+  const reasoning: ReasoningMode = req.reasoningMode ?? 'standard'
+  // Extended thinking is only documented on Opus + Sonnet (3.7+, 4.x).
+  // Haiku silently ignores the block today, but to be defensive we
+  // gate on a name pattern instead of sending it everywhere.
+  const supportsThinking = /opus|sonnet/i.test(req.model.id)
+  const wantsThinking = (reasoning === 'extended' || reasoning === 'deep') && supportsThinking
+  // Deep mode pushes the budget further; standard skips the block entirely.
+  const thinkingBudget = reasoning === 'deep' ? 12_000 : 5_000
+  // max_tokens must exceed thinking budget so the model has room to ALSO
+  // produce its visible answer after thinking. Pad by ~50%.
+  const maxTokens = wantsThinking ? Math.max(2000, Math.round(thinkingBudget * 1.5)) : 2000
   const body: Record<string, unknown> = {
     model: req.model.id,
-    max_tokens: 2000,
-    temperature: req.temperature ?? 1,
+    max_tokens: maxTokens,
     messages: [{ role: 'user', content: req.prompt }],
+  }
+  if (wantsThinking) {
+    // Extended thinking REQUIRES temperature=1 (Anthropic API constraint).
+    body.temperature = 1
+    body.thinking = { type: 'enabled', budget_tokens: thinkingBudget }
+  } else {
+    body.temperature = req.temperature ?? 1
   }
   if (searchOn) {
     body.tools = [{ type: 'web_search_20250305', name: 'web_search' }]
@@ -482,18 +550,34 @@ async function runAnthropic(req: RunRequest): Promise<RunResult> {
     // Anthropic returns the resolved model snapshot in `model`
     modelSnapshot: typeof data.model === 'string' ? data.model : undefined,
     searchEnabled: searchOn,
+    // Echo what we actually applied — falls back to 'standard' on models
+    // that don't support thinking even if 'extended' was requested.
+    reasoningMode: wantsThinking ? reasoning : 'standard',
   }
 }
 
 async function runGoogle(req: RunRequest): Promise<RunResult> {
   const start = Date.now()
+  const reasoning: ReasoningMode = req.reasoningMode ?? 'standard'
+  // Gemini 2.5 + 3.x families expose a thinking budget via
+  // generationConfig.thinkingConfig. Older 2.x models silently ignore it.
+  // We gate by id pattern rather than sending it everywhere — defensive
+  // against quota errors on accounts that haven't been migrated.
+  const supportsThinking = /^gemini-(2\.5|3)/i.test(req.model.id)
+  const wantsThinking = (reasoning === 'extended' || reasoning === 'deep') && supportsThinking
+  const thinkingBudget = reasoning === 'deep' ? 24_000 : 8_000
+  const maxOutputTokens = wantsThinking ? Math.max(4000, thinkingBudget + 1000) : 1500
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${req.model.id}:generateContent?key=${encodeURIComponent(req.apiKey)}`
+  const generationConfig: Record<string, unknown> = {
+    maxOutputTokens,
+    temperature: req.temperature ?? 1,
+  }
+  if (wantsThinking) {
+    generationConfig.thinkingConfig = { thinkingBudget }
+  }
   const body: Record<string, unknown> = {
     contents: [{ parts: [{ text: req.prompt }], role: 'user' }],
-    generationConfig: {
-      maxOutputTokens: 1500,
-      temperature: req.temperature ?? 1,
-    },
+    generationConfig,
   }
   // Gemini grounding tool is only attached when both the model supports it
   // AND search is requested for this run. Skipping it makes Gemini answer
@@ -537,6 +621,9 @@ async function runGoogle(req: RunRequest): Promise<RunResult> {
     // Search is attached only when the model supports grounding AND the
     // caller didn't explicitly disable it; mirror that here.
     searchEnabled: req.model.webAccess && req.searchEnabled !== false,
+    // 'standard' if the model didn't support a thinking budget at all,
+    // otherwise echo what we asked for.
+    reasoningMode: wantsThinking ? reasoning : 'standard',
   }
 }
 

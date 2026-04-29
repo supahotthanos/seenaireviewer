@@ -17,6 +17,10 @@ const runSchema = z.object({
   // When false, the runner skips the provider's web-search tool so the
   // answer reflects ONLY the model's training-data brand awareness.
   searchEnabled: z.boolean().optional(),
+  // standard: today's behavior. extended: enable thinking budgets.
+  // deep: route to deep-research model variants where available; cost can
+  // be 10–50× standard so the UI confirms before sending these.
+  reasoningMode: z.enum(['standard', 'extended', 'deep']).optional(),
 })
 
 function getServerKey(providerId: ProviderId): string | null {
@@ -42,7 +46,7 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: 'Validation failed' }, { status: 400 })
   }
-  const { providerId, modelId, prompt, temperature, searchEnabled } = parsed.data
+  const { providerId, modelId, prompt, temperature, searchEnabled, reasoningMode } = parsed.data
 
   const provider = PROVIDERS.find((p) => p.id === providerId)
   if (!provider) {
@@ -69,6 +73,7 @@ export async function POST(request: NextRequest) {
       prompt,
       temperature,
       searchEnabled,
+      reasoningMode,
     })
     return NextResponse.json(result)
   } catch (err) {
