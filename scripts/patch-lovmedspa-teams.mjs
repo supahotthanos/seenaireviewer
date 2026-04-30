@@ -73,6 +73,10 @@ const PATCHES = {
     team_members: [
       'Mark Ennett, PhD, CRNA',
       'Andrea Herrera (Esthetician)',
+      // Operator-supplied addition — last name / title pending. Update this
+      // entry once the operator confirms her credentials so the QR-scan
+      // landing page shows her in the standard "Name, Credentials" format.
+      'Vanessa',
     ],
     services: BASE_SERVICES,
   },
